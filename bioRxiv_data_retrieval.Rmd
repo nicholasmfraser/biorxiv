@@ -1,0 +1,732 @@
+---
+title: "Examining the 'Early Access Effect' through bioRxiv preprints: data retrieval"
+output: html_notebook
+---
+
+# Examining the 'Early Access Effect' with bioRxiv preprints: data retrieval
+
+## Initial Configuration
+
+```{r}
+# Call libraries
+library(curl)
+library(httr)
+library(tidyverse)
+library(jsonlite)
+library(lubridate)
+library(data.table)
+
+# Credentials for APIs - these should be set in .Renviron file
+email <- Sys.getenv("EMAIL")
+altmetric_api_key <- Sys.getenv("ALTMETRIC_API_KEY")
+```
+
+## Retrieve Summary Data
+
+* Assign months for which data will be retrieved
+```{r}
+# Generate start and end dates of months for period of data extraction. Note that crossref API accepts dates in character format
+startdates <- seq(as.Date("2013/11/1"), as.Date("2018/09/1"), "months")
+enddates <- seq(as.Date("2013/12/1"), as.Date("2018/10/1"), "months")-1
+months <- length(startdates)
+```
+
+* Total number of bioRxiv preprints deposited
+```{r}
+# Set start and end dates for analysis
+startdate <- startdates[1]
+enddate <- enddates[length(enddates)]
+
+# Query Crossref API for all preprints with a member id of 246 (corresponding to bioRxiv preprints) over time period
+url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=0&mailto=", email, sep="")
+response <- GET(url)
+data <- content(response)
+
+#Extract counts of preprints
+count_p_all <- data$message$`facets`$`publisher-name`$values$`Cold Spring Harbor Laboratory`
+
+rm(url, response, data) # remove redundant variables
+```
+
+* Total number of bioRxiv preprints deposited that have a linked published article in Crossref over time
+```{r}
+# Query Crossref API for all preprints with a member id of 246 that also have a preprint relationship to another published article (relation.type:is-preprint-of)
+url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=0&mailto=", email, sep="")
+response <- GET(url)
+data <- content(response)
+
+count_p_matching <- data$message$`facets`$`publisher-name`$values$`Cold Spring Harbor Laboratory`
+
+rm(url, response, data, startdate, enddate) # remove redundant variables
+```
+
+* Distribution of bioRxiv preprint deposits over time
+```{r}
+preprint_distributions = NULL 
+
+for (i in 1:months){
+  
+  # All preprints
+  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", as.character(startdates[i]),",until-posted-date:",as.character(enddates[i]),"&rows=0&mailto=n.fraser@zbw.eu", sep="")
+  response <- GET(url)
+  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  all_preprints <- content(response)$message$`total-results`
+
+  # Preprints with relationship to a published article
+  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:", as.character(startdates[i]),",until-posted-date:",as.character(enddates[i]),"&rows=0&mailto=n.fraser@zbw.eu", sep="")
+  response <- GET(url)
+  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  matching_preprints <- content(response)$message$`total-results`
+
+  preprint_distributions <- rbind(preprint_distributions, data.frame(date = format(as.Date(startdates[i]), "%Y-%m"), "preprints" = all_preprints, "matching_preprints" = matching_preprints))
+}
+
+rm(i, url, response, all_preprints, matching_preprints) # remove redundant variables
+```
+
+```{r}
+# Write results to csv
+write.csv(preprint_distributions, file="data/bioRxiv_preprints_monthly_distribution.csv", row.names=FALSE)
+```
+
+## Retrieve Article Metadata
+
+* DOIs, titles and posted dates and relation status (i.e. with published manuscripts) for all preprints deposited to bioRxiv
+```{r}
+# Build request function
+request <- function(startdate, enddate, rows, offset){
+  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", startdate, ",until-posted-date:", enddate,"&rows=", rows, "&offset=", offset, "&select=DOI,title,relation,posted&mailto=n.fraser@zbw.eu", sep="")
+  response <- GET(url)
+  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  if (response$status_code == 404) { 
+    return()
+  }else{
+    content <- content(response)
+    data <- fromJSON(toJSON(content$message$items))
+    return(data)
+  }  
+}
+
+# Pre-allocate data table columns
+all_preprints_metadata <- data.table(
+  preprint_doi = character(),
+  preprint_title = character(),
+  preprint_posted_date = character(),
+  preprint_has_published_article = logical()
+)
+
+# Progress bar
+pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
+
+for (i in 1:months){
+  
+  # Crossref API can only serve 1000 rows, necessary to make multiple requests with offsets when >1000 results. Could also use cursor function - see API docs
+  loops <- ceiling(preprint_distributions$preprints[i]/1000)
+  
+  for (j in 1:loops) {
+  
+    # Send request
+    data <- request(as.character(startdates[i]), as.character(enddates[i]), 1000, (j-1)*1000)
+    
+    # Parse basic metadata
+    preprint_doi <- unlist(data$DOI, recursive = TRUE, use.names = TRUE)
+    preprint_title <- unlist(data$title, recursive = TRUE, use.names = TRUE)
+
+    preprint_posted_date = NULL
+    preprint_has_published_article = NULL
+    
+    for (k in 1:length(data$DOI)){
+      
+      # Parse preprint posted date
+      year <- unlist(data$posted$`date-parts`[[k]][[1]], recursive = TRUE, use.names = TRUE)
+      month <- unlist(data$posted$`date-parts`[[k]][[2]], recursive = TRUE, use.names = TRUE)
+      day <- unlist(data$posted$`date-parts`[[k]][[3]], recursive = TRUE, use.names = TRUE)
+      preprint_posted_date <- rbind(preprint_posted_date, data.frame("preprint_posted_date" = as.Date(paste(year, "-", month, "-", day, sep=""))))
+      
+      # Check if relationship to published article exists
+      if(length(data$relation$`is-preprint-of`[[k]]$id)>0){
+        published_article <- TRUE
+      } else {
+        published_article <- FALSE
+      }
+      preprint_has_published_article <- rbind(preprint_has_published_article, data.frame("preprint_has_published_article" = published_article))
+    }
+    
+    df <- data.frame("preprint_doi" = preprint_doi, "preprint_title" = preprint_title, " preprint_has_published_article" =  preprint_has_published_article, "preprint_posted_date" = preprint_posted_date)
+    
+    all_preprints_metadata <- rbind(all_preprints_metadata, df, fill=TRUE)
+    
+  }
+  setTxtProgressBar(pb, i)
+}
+
+rm(request, pb, i, loops, j, data, preprint_doi, preprint_title, preprint_posted_date, k, year, month, day, preprint_has_published_article, published_article, df) # remove redundant variables
+
+```
+
+```{r}
+# Write results to csv
+write.csv(all_preprints_metadata, file="data/bioRxiv_all_preprints_metadata.csv", row.names=FALSE)
+```
+
+* DOI, title, category, posted dates and DOI of published paper, for bioRxiv preprints that have a link to a published paper in Crossref
+```{r}
+request <- function(startdate, enddate, rows, offset){
+  url <- paste("http://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=", rows, "&offset=", offset, "&select=DOI,title,group-title,relation,posted&mailto=", email, sep="")
+  response <- GET(url)
+  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  if (response$status_code == 404) { 
+    return()
+  }else{
+    content <- content(response)
+    if(length(content$message$items) == 0) {
+      return()
+    } else {
+      data <- fromJSON(toJSON(content$message$items))
+      return(data)
+    }
+  }
+}
+
+# Pre-allocate data table columns
+matching_preprints_metadata <- NULL
+
+# Progress bar
+pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
+
+for (i in 1:months){
+  
+  # Send request
+  data <- request(as.character(startdates[i]), as.character(enddates[i]), 1000, 0)
+  
+  if(!(length(data))){
+    setTxtProgressBar(pb, i)
+    next()
+  }
+  
+  # Parse basic metadata
+  preprint_doi <- unlist(data$DOI, recursive = TRUE, use.names = TRUE)
+  preprint_title <- unlist(data$title, recursive = TRUE, use.names = TRUE)
+  data$`group-title`[sapply(data$`group-title`, is.null)] <- NA
+  preprint_category <- if(length(data$`group-title`)) unlist(data$`group-title`, recursive = TRUE, use.names = TRUE)
+
+  preprint_posted_date = list()
+  preprint_published_doi = list()
+  
+  for (j in 1:length(data$relation$'is-preprint-of')){
+    # Parse preprint posted date
+    year <- unlist(data$posted$`date-parts`[[j]][[1]], recursive = TRUE, use.names = TRUE)
+    month <- unlist(data$posted$`date-parts`[[j]][[2]], recursive = TRUE, use.names = TRUE)
+    day <- unlist(data$posted$`date-parts`[[j]][[3]], recursive = TRUE, use.names = TRUE)
+    preprint_posted_date <- rbind(preprint_posted_date, data.frame("preprint_posted_date" = as.Date(paste(year, "-", month, "-", day, sep=""))))
+    # Parse DOI of linked published article
+    preprint_published_doi <- rbind(preprint_published_doi, data.frame("preprint_published_doi" = unlist(data$relation$`is-preprint-of`[[j]]$id, recursive = TRUE, use.names = TRUE)))
+   }
+  
+  df <- data.frame("preprint_doi" = preprint_doi, "preprint_title" = preprint_title, "preprint_category" = preprint_category, "preprint_published_doi" = preprint_published_doi, "preprint_posted_date" = preprint_posted_date)
+  
+  matching_preprints_metadata <- rbind(matching_preprints_metadata, df)
+  
+  setTxtProgressBar(pb, i)
+}
+
+rm(data, df, year, month, day, preprint_published_doi, preprint_posted_date, preprint_doi, preprint_title, preprint_category, pb, i, j, request) # remove redundant variables
+
+```
+
+
+```{r}
+# Write results to csv
+write.csv(matching_preprints_metadata, file="data/bioRxiv_matching_preprints_metadata.csv", row.names=FALSE)
+```
+
+* DOI, title, publisher, article type, issue, volume, journal title, journal issn and published date for published articles that are linked to bioRxiv preprints via Crossref. This step is slow as it requires indivudally iterating and making an API call for each DOI.
+```{r}
+request <- function(doi){
+  url <- paste("http://api.crossref.org/works/", doi, "?mailto=", email, sep="")
+  Sys.sleep(0.05) # Crossref max API calls = 50/second
+  response <- GET(url)
+  # Some DOIs resolve to 404 error
+  if (response$status_code == 404) { 
+    return()
+  }
+  else{
+    content <- content(response)
+    data <- fromJSON(toJSON(content$message))
+    return(data)
+  }
+}
+
+# Pre-allocate data table columns
+published_articles_metadata <- NULL
+
+len = length(matching_preprints_metadata$preprint_published_doi)
+
+# Progress bar
+pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
+
+for (i in 1:len){
+  
+  # Send request, ensure that DOI is character encoded
+  data <- request(as.character(matching_preprints_metadata$preprint_published_doi[i]))
+  
+  # Handle 404 errors - set metadata to NA
+  if(!(length(data))){
+    published_doi <- matching_preprints_metadata$preprint_published_doi[i]
+    published_publisher <- NA
+    published_journal <- NA
+    published_title <- NA
+    published_type <- NA
+    published_issue <- NA
+    published_volume <- NA
+    published_date <- NA
+    published_issn <- NA
+  } 
+  else{
+    # Extract relevant metadata
+    published_doi <- if (length(data$DOI)) data$DOI else matching_preprints_metadata$published_doi[i]
+    published_publisher <- if (length(data$publisher)) data$publisher else NA
+    published_type <- if (length(data$type)) data$type else NA
+    published_issue <- if (length(data$`journal-issue`$issue)) data$`journal-issue`$issue else NA
+    published_volume <- if (length(data$volume)) data$volume else NA
+    published_title <- if (length(data$title)) data$title else NA
+    published_journal <- if (length(data$`container-title`)) data$`container-title`[1] else NA
+    published_issn <- if (length(data$ISSN)) data$ISSN[1] else NA
+    
+    # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page (see Haustein et al.: https://arxiv.org/ftp/arxiv/papers/1505/1505.00796.pdf)
+    year <- data$created$`date-parts`[[1]]
+    month <- data$created$`date-parts`[[2]]
+    day <- data$created$`date-parts`[[3]]
+    published_date <- data.frame("published_date" = as.Date(paste(year, "-", month, "-", day, sep="")))
+  }
+  
+  df <- data.frame("published_doi" = published_doi, "published_publisher" = published_publisher, "published_journal" = published_journal, "published_title" = published_title, "published_type" = published_type, "published_issue" = published_issue, "published_volume" = published_volume, "published_date" = published_date, "published_issn" = published_issn)
+  
+  published_articles_metadata <- rbind(published_articles_metadata, df)
+
+  setTxtProgressBar(pb, i)
+}
+
+rm(pb, i, year, month, day, df, published_date, published_title, published_type, published_issue, published_volume, published_publisher, published_doi, published_journal,published_issn, data, len, request) # remove redundant variables
+
+```
+
+```{r}
+# Write results to csv
+write.csv(published_articles_metadata, file="data/bioRxiv_published_articles_metadata.csv", row.names=FALSE)
+```
+
+* Clean and merge metadata of preprints and their matching published papers
+```{r}
+# Combine matching preprints and published articles files
+matching_preprints_metadata_subset <- subset(matching_preprints_metadata, select = -c(preprint_published_doi))
+clean <- cbind(matching_preprints_metadata_subset, published_articles_metadata)
+
+# Remove duplicate records:
+# Convert all DOIs to lower case for matching
+clean$preprint_doi <- tolower(clean$preprint_doi)
+clean$published_doi <- tolower(clean$published_doi)
+# How many duplicate preprints?
+preprints_duplicates <- data.frame(table(clean$preprint_doi)) 
+preprints_duplicates[preprints_duplicates$Freq>1,] # should be zero!
+# How many duplicate published articles?
+published_duplicates <- data.frame(table(clean$published_doi))
+published_duplicates[published_duplicates$Freq>1,]
+# Remove duplicates
+clean <- clean[!duplicated(clean$preprint_doi), ]
+clean <- clean[!duplicated(clean$published_doi), ]
+
+# Remove all article types except journal articles
+clean <- clean[(clean$published_type == "journal-article"),]
+
+#Remove NA values
+clean <- clean[complete.cases(clean$preprint_doi), ]
+
+rownames(clean) <- c()
+
+rm(matching_preprints_metadata_subset, preprints_duplicates, published_duplicates)
+
+```
+
+```{r}
+# Write results to csv
+write.csv(clean, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
+rm(clean)
+```
+
+
+* Generate a control dataset for comparative analysis. One article is sampled at random from the same journal and calendar month as each published article with a bioRxiv preprint. 
+```{r}
+
+request <- function(startdate, enddate, issn){
+  # limit request to journal articles (type=5) and articles that are not updates (PloS classifies these as journal-article)
+  url <- paste("http://api.crossref.org/journals/", issn, "/works?filter=from-created-date:",startdate,",until-created-date:",enddate,",type:journal-article,is-update:false&rows=1000&select=DOI,title,publisher,container-title,volume,issue,created,type&mailto=", email, sep="")
+  response <- GET(url)
+  Sys.sleep(0.05) #Crossref server max requests = 50/second
+  # Some ISSNs resolve to 404 error
+  if (response$status_code == 404) {
+    return()
+  }
+  else{
+    content <- httr::content(response)
+    data <- fromJSON(toJSON(content$message$items))
+    return(data)
+  }
+}
+
+published_articles <- clean
+
+len <- length(published_articles$published_doi)
+
+#Progress bar
+pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
+
+#control_dataset = NULL
+
+for(i in 7590:len) {
+  
+  # query within 30 days of publication of article with preprint
+  startdate <- as.Date(as.character(published_articles$published_date[i]))-30
+  enddate <- as.Date(as.character(published_articles$published_date[i]))+30
+  issn <- as.character(published_articles$published_issn[i]) 
+  
+  # first we retrieve a sample of 10 results from Crossref 
+  data <- request(startdate, enddate, issn) 
+  data <- data[!data$DOI %in% published_articles$published_doi,]
+  # Articles with short titles removed (these are often editorial content)
+  data <- data[which(nchar(data$title)>=30),]
+  
+  # set values to NA if all data removed after previous step
+  if(!(length(data$DOI))){
+    control_doi <- NA
+    control_title <- NA
+    control_journal <- NA
+    control_type <- NA
+    control_issue <- NA
+    control_volume <- NA
+    control_publisher <- NA
+    control_date <- NA
+  } 
+  # else sample a random paper and extract metadata
+  else{
+    
+    data <- sample_n(data, 1)
+    
+    # Extract relevant metadata
+    control_doi <- if (length(data$DOI[[1]][1])) data$DOI[[1]][1] else NA
+    control_title <- if (length(data$title[[1]][1])) data$title[[1]][1] else NA
+    control_publisher <- if (length(data$publisher[[1]][1])) data$publisher[[1]][1] else NA
+    control_type <- if (length(data$type[[1]][1])) data$type[[1]][1] else NA
+    control_issue <- if (length(data$issue[[1]][1])) data$issue[[1]][1] else NA
+    control_volume <- if (length(data$volume[[1]][1])) data$volume[[1]][1] else NA
+    control_journal <- if (length(data$`container-title`[[1]][1])) data$`container-title`[[1]][1] else NA
+
+    # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page.
+    year <- data$created$`date-parts`[[1]][1]
+    month <- data$created$`date-parts`[[1]][2]
+    day <- data$created$`date-parts`[[1]][3]
+    control_date <- data.frame("control_date" = as.Date(paste(year, "-", month, "-", day, sep="")))
+  }
+  
+  df <- data.frame("control_doi" = control_doi, "control_comparison_doi" = published_articles$published_doi[i], "control_title" = control_title, "control_publisher" = control_publisher, "control_journal" = control_journal, "control_volume" = control_volume, "control_issue" = control_issue, "control_type" = control_type, "control_date" = control_date, "control_issn" = issn)
+  
+  control_dataset <- rbind(control_dataset, df)
+  
+  setTxtProgressBar(pb, i)
+  
+}
+
+rm(startdate, enddate, issn, control_doi, control_title, control_issue, control_volume, control_journal, control_publisher, df, pb, len, request)
+
+```
+
+```{r}
+# Write results to csv
+write.csv(control_dataset, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
+```
+
+## Add Impact Factors to published and control article metadata
+
+```{r}
+# IF breakdown
+merged_published <- NULL
+merged_control <- NULL
+
+impact <- read.csv("data/bioRxiv_IFs_2017.csv", header=TRUE)
+impact$journal <- tolower(impact$Title)
+impact <- impact[!duplicated(impact),]
+
+# First for published articles
+published_articles <- read.csv("data/bioRxiv_preprints_published_articles_metadata.csv", header=TRUE)
+published_articles$published_year <- format(as.Date(published_articles$published_date, format="%Y-%m-%d"),"%Y")
+published_articles$published_journal <- tolower(published_articles$published_journal)
+published_articles$id <- seq.int(nrow(published_articles))
+
+# First try to merge IF by Year and ISSN
+merged_published <- merge(published_articles, impact, by.x=c("published_issn"), by.y=c("ISSN"), all.x=T)
+
+# For records with no match, try by title
+sub <- merged_published[ which(is.na(merged_published$IF)), ]
+drops <- c("Rank","Title", "Cites", "IF")
+sub <- sub[ , !(names(sub) %in% drops)]
+sub_merged <- merge(sub, impact, by.x="published_journal", by.y="journal", all.x=T)
+drops <- c("ISSN")
+sub_merged <- sub_merged[ , !(names(sub_merged) %in% drops)]
+merged_published <- merged_published[which(!is.na(merged_published$IF)), ]
+merged_published <- rbind(merged_published, sub_merged)
+merged_published <- merged_published[order(merged_published$id),]
+rownames(merged_published) <- c()
+drops <- c("published_year", "Rank","Title", "Cites", "journal", "id")
+merged_published <- merged_published[ , !(names(merged_published) %in% drops)]
+
+rm(sub, drops, sub_merged)
+
+# Same for control articles
+control_articles <- read.csv("data/bioRxiv_control_articles_metadata.csv", header=TRUE)
+control_articles$control_year <- format(as.Date(control_articles$control_date, format="%Y-%m-%d"),"%Y")
+control_articles$control_journal <- tolower(control_articles$control_journal)
+control_articles$id <- seq.int(nrow(control_articles))
+
+# First try to merge IF by Year and ISSN
+merged_control <- merge(control_articles, impact, by.x=c("control_issn"), by.y=c("ISSN"), all.x=T)
+
+# For records with no match, try by title
+sub <- merged_control[ which(is.na(merged_control$IF)), ]
+drops <- c("Rank","Title", "Cites", "IF")
+sub <- sub[ , !(names(sub) %in% drops)]
+sub_merged <- merge(sub, impact, by.x="control_journal", by.y="journal", all.x=T)
+drops <- c("ISSN")
+sub_merged <- sub_merged[ , !(names(sub_merged) %in% drops)]
+merged_control <- merged_control[which(!is.na(merged_control$IF)), ]
+merged_control <- rbind(merged_control, sub_merged)
+merged_control <- merged_control[order(merged_control$id),]
+rownames(merged_control) <- c()
+drops <- c("control_year", "Rank","Title", "Cites", "journal", "id")
+merged_control <- merged_control[ , !(names(merged_control) %in% drops)]
+
+rm(sub, drops, sub_merged, impact, published_articles, control_articles)
+
+```
+
+```{r}
+# Write results to csv
+write.csv(merged_published, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
+write.csv(merged_control, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
+rm(merged_published, merged_control)
+```
+
+## OA status
+
+* Retrieve article OA data from Unpaywall for both published and control articles
+```{r}
+# Load data
+published_articles <- read.csv('data/bioRxiv_preprints_published_articles_metadata.csv', header=TRUE)
+control_articles <- read.csv('data/bioRxiv_control_articles_metadata.csv', header=TRUE)
+
+# Build request
+request <- function(doi){
+  url <- paste("api.unpaywall.org/v2/", doi, "?email=n.fraser@zbw.eu", sep="")
+  response <- GET(url)
+  if (response$status_code == 404) {
+    return() 
+  }
+  else {
+    data <- httr::content(response)
+    return(data)
+  }
+}
+
+len <- length(published_articles$published_doi)
+
+pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
+
+published_oa_status = NULL
+control_oa_status = NULL
+
+for (i in 1:len){
+  
+  published_doi <- as.character(published_articles$published_doi[i])
+  control_doi <- as.character(control_articles$control_doi[i])
+  
+  # Published articles 
+  data <- request(published_doi)
+  if(!(length(data))){
+    published_is_oa <- NA
+    published_oa_journal <- NA
+    published_oa_evidence <- NA
+    published_oa_host_type <- NA
+  }else{
+    published_is_oa <- data$is_oa
+    published_oa_journal <- data$journal_is_oa
+    published_oa_evidence <- if (length(data$best_oa_location$evidence)) data$best_oa_location$evidence else NA
+    published_oa_host_type <- if (length(data$best_oa_location$host_type)) data$best_oa_location$host_type else NA
+  }
+  df <- data.frame("published_doi" = published_doi, "published_is_oa" = published_is_oa, "published_oa_journal" = published_oa_journal, "published_oa_evidence" = published_oa_evidence, "published_oa_host_type" = published_oa_host_type)
+  published_oa_status <- rbind(published_oa_status, df)
+  
+  # Control articles
+  data <- request(control_doi)
+  if(!(length(data))){
+    control_is_oa <- NA
+    control_oa_journal <- NA
+    control_oa_evidence <- NA
+    control_oa_host_type <- NA
+  }else{
+    control_is_oa <- data$is_oa
+    control_oa_journal <- data$journal_is_oa
+    control_oa_evidence <- if (length(data$best_oa_location$evidence)) data$best_oa_location$evidence else NA
+    control_oa_host_type <- if (length(data$best_oa_location$host_type)) data$best_oa_location$host_type else NA
+  }
+  df <- data.frame("control_doi" = control_doi, "control_is_oa" = control_is_oa, "control_oa_journal" = control_oa_journal, "control_oa_evidence" = control_oa_evidence, "control_oa_host_type" = control_oa_host_type)
+  control_oa_status <- rbind(control_oa_status, df)
+  
+  setTxtProgressBar(pb, i)
+}
+
+rm(len, pb, i, published_doi, control_doi, published, control, data, published_is_oa, published_oa_journal, published_oa_evidence, published_oa_host_type, control_is_oa, control_oa_journal, control_oa_evidence, control_oa_host_type, df) # remove redundant variables
+```
+
+
+```{r}
+# Bind to metadata
+published_oa_status <- published_oa_status[,c(2:5)]
+control_oa_status <- control_oa_status[,c(2:5)]
+published_articles <- cbind(published_articles, published_oa_status)
+control_articles <- cbind(control_articles, control_oa_status)
+```
+
+
+
+```{r}
+# Write results to csv
+write.csv(published_articles, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
+write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
+rm(published_oa_status, control_oa_status)
+
+```
+
+
+## Altmetrics
+
+* Retrieve article altmetric data
+```{r}
+# Load data
+published_articles <- read.csv('data/bioRxiv_preprints_published_articles_metadata.csv', header=TRUE)
+control_articles <- read.csv('data/bioRxiv_control_articles_metadata.csv', header=TRUE)
+
+# Build request for altmetrics API
+request <- function(doi){
+  url <- paste("https://api.altmetric.com/v1/doi/", doi, "?key=", altmetric_api_key, sep="")
+  response <- GET(url)
+  # Altmetric API returns 404 'Not found' for articles with no altmetric activity
+  if (response$status_code == 404) {
+    return() 
+  }
+  else {
+    data <- content(response)
+    return(data)
+  }
+}
+
+len <- length(published_articles$published_doi)
+
+pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
+
+preprint_altmetrics = NULL
+published_altmetrics = NULL
+control_altmetrics = NULL
+
+for (i in 1:len){
+
+  preprint_doi <- as.character(published_articles$preprint_doi[i])
+  published_doi <- as.character(published_articles$published_doi[i])
+  control_doi <- as.character(control_articles$control_doi[i])
+  
+  # Preprints
+  data <- request(preprint_doi)
+  if(!(length(data))){
+    preprint_score <- 0
+    preprint_tweets <- 0
+    preprint_facebook <- 0
+    preprint_feeds <- 0
+    preprint_mendeley <- 0
+  }else{
+    preprint_score <- data$score
+    preprint_tweets <- if(length(data$cited_by_tweeters_count)) data$cited_by_tweeters_count else 0
+    preprint_facebook <- if(length(data$cited_by_fbwalls_count)) data$cited_by_fbwalls_count else 0
+    preprint_feeds <- if(length(data$cited_by_feeds_count)) data$cited_by_feeds_count else 0
+    preprint_mendeley <- if(length(data$readers$mendeley)) data$readers$mendeley else 0
+  }
+  
+  df = data.frame("preprint_score" = preprint_score, "preprint_tweets" = preprint_tweets, "preprint_facebook" = preprint_facebook, "preprint_feeds" = preprint_feeds, "preprint_mendeley" = preprint_mendeley)
+  
+  preprint_altmetrics = rbind(preprint_altmetrics, df)
+  
+  # Published articles
+  data <- request(published_doi)
+  if(!(length(data))){
+    published_score <- 0
+    published_tweets <- 0
+    published_facebook <- 0
+    published_feeds <- 0
+    published_mendeley <- 0
+  }else{
+    published_score <- data$score
+    published_tweets <- if(length(data$cited_by_tweeters_count)) data$cited_by_tweeters_count else 0
+    published_facebook <- if(length(data$cited_by_fbwalls_count)) data$cited_by_fbwalls_count else 0
+    published_feeds <- if(length(data$cited_by_feeds_count)) data$cited_by_feeds_count else 0
+    published_mendeley <- if(length(data$readers$mendeley)) data$readers$mendeley else 0
+  }
+  
+  df = data.frame("published_score" = published_score, "published_tweets" = published_tweets, "published_facebook" = published_facebook, "published_feeds" = published_feeds, "published_mendeley" = published_mendeley)
+  
+  published_altmetrics = rbind(published_altmetrics, df)
+  
+  # Control articles
+  data <- request(control_doi)
+  if(!(length(data))){
+    control_score <- 0
+    control_tweets <- 0
+    control_facebook <- 0
+    control_feeds <- 0
+    control_mendeley <- 0
+  }else{
+    control_score <- data$score
+    control_tweets <- if(length(data$cited_by_tweeters_count)) data$cited_by_tweeters_count else 0
+    control_facebook <- if(length(data$cited_by_fbwalls_count)) data$cited_by_fbwalls_count else 0
+    control_feeds <- if(length(data$cited_by_feeds_count)) data$cited_by_feeds_count else 0
+    control_mendeley <- if(length(data$readers$mendeley)) data$readers$mendeley else 0
+  }
+    
+  df = data.frame("control_score" = control_score, "control_tweets" = control_tweets, "control_facebook" = control_facebook, "control_feeds" = control_feeds, "control_mendeley" = control_mendeley)
+  
+  control_altmetrics = rbind(control_altmetrics, df)
+    
+  setTxtProgressBar(pb, i)
+}
+
+rm(len, pb, i, preprint_score, preprint_tweets, preprint_facebook, preprint_feeds, preprint_mendeley, published_score, published_tweets, published_facebook, published_feeds, published_mendeley, control_score, control_tweets, control_facebook, control_feeds, control_mendeley) # remove redundant variables
+
+```
+
+
+```{r}
+# Bind altmetrics to metadata
+published_articles <- cbind(published_articles, preprint_altmetrics)
+published_articles <- cbind(published_articles, published_altmetrics)
+control_articles <- cbind(control_articles, control_altmetrics)
+```
+
+
+```{r}
+# Write to csv
+write.csv(published_articles, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
+write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
+rm(preprint_altmetrics, published_altmetrics, control_altmetrics)
+```
+
+
+
+
+
+
