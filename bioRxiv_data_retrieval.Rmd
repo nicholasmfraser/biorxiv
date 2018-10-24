@@ -107,13 +107,7 @@ request <- function(startdate, enddate, rows, offset){
   }  
 }
 
-# Pre-allocate data table columns
-all_preprints_metadata <- data.table(
-  preprint_doi = character(),
-  preprint_title = character(),
-  preprint_posted_date = character(),
-  preprint_has_published_article = logical()
-)
+all_preprints_metadata <- NULL
 
 # Progress bar
 pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
@@ -154,7 +148,7 @@ for (i in 1:months){
     
     df <- data.frame("preprint_doi" = preprint_doi, "preprint_title" = preprint_title, " preprint_has_published_article" =  preprint_has_published_article, "preprint_posted_date" = preprint_posted_date)
     
-    all_preprints_metadata <- rbind(all_preprints_metadata, df, fill=TRUE)
+    all_preprints_metadata <- rbind(all_preprints_metadata, df)
     
   }
   setTxtProgressBar(pb, i)
@@ -188,7 +182,6 @@ request <- function(startdate, enddate, rows, offset){
   }
 }
 
-# Pre-allocate data table columns
 matching_preprints_metadata <- NULL
 
 # Progress bar
@@ -257,7 +250,6 @@ request <- function(doi){
   }
 }
 
-# Pre-allocate data table columns
 published_articles_metadata <- NULL
 
 len = length(matching_preprints_metadata$preprint_published_doi)
@@ -293,7 +285,7 @@ for (i in 1:len){
     published_journal <- if (length(data$`container-title`)) data$`container-title`[1] else NA
     published_issn <- if (length(data$ISSN)) data$ISSN[1] else NA
     
-    # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page (see Haustein et al.: https://arxiv.org/ftp/arxiv/papers/1505/1505.00796.pdf)
+    # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page
     year <- data$created$`date-parts`[[1]]
     month <- data$created$`date-parts`[[2]]
     day <- data$created$`date-parts`[[3]]
@@ -339,9 +331,10 @@ clean <- clean[!duplicated(clean$published_doi), ]
 # Remove all article types except journal articles
 clean <- clean[(clean$published_type == "journal-article"),]
 
-#Remove NA values
+# Remove NA values
 clean <- clean[complete.cases(clean$preprint_doi), ]
 
+# Re-allocate row indexes
 rownames(clean) <- c()
 
 rm(matching_preprints_metadata_subset, preprints_duplicates, published_duplicates)
@@ -374,16 +367,16 @@ request <- function(startdate, enddate, issn){
   }
 }
 
-published_articles <- clean
+published_articles <- read.csv("data/bioRxiv_preprints_published_articles_metadata.csv", header=TRUE)
 
 len <- length(published_articles$published_doi)
 
 #Progress bar
 pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
 
-#control_dataset = NULL
+control_dataset = NULL
 
-for(i in 7590:len) {
+for(i in 1:len) {
   
   # query within 30 days of publication of article with preprint
   startdate <- as.Date(as.character(published_articles$published_date[i]))-30
@@ -436,7 +429,7 @@ for(i in 7590:len) {
   
 }
 
-rm(startdate, enddate, issn, control_doi, control_title, control_issue, control_volume, control_journal, control_publisher, df, pb, len, request)
+rm(startdate, enddate, issn, control_doi, control_title, control_issue, control_volume, control_journal, control_publisher, df, pb, len, request) # remove redundant variables
 
 ```
 
@@ -504,7 +497,7 @@ rownames(merged_control) <- c()
 drops <- c("control_year", "Rank","Title", "Cites", "journal", "id")
 merged_control <- merged_control[ , !(names(merged_control) %in% drops)]
 
-rm(sub, drops, sub_merged, impact, published_articles, control_articles)
+rm(sub, drops, sub_merged, impact, published_articles, control_articles) # remove redundant variables
 
 ```
 
@@ -588,13 +581,12 @@ rm(len, pb, i, published_doi, control_doi, published, control, data, published_i
 
 
 ```{r}
-# Bind to metadata
+# Bind OA data to article metadata
 published_oa_status <- published_oa_status[,c(2:5)]
 control_oa_status <- control_oa_status[,c(2:5)]
 published_articles <- cbind(published_articles, published_oa_status)
 control_articles <- cbind(control_articles, control_oa_status)
 ```
-
 
 
 ```{r}
@@ -604,7 +596,6 @@ write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", r
 rm(published_oa_status, control_oa_status)
 
 ```
-
 
 ## Altmetrics
 
@@ -711,7 +702,7 @@ rm(len, pb, i, preprint_score, preprint_tweets, preprint_facebook, preprint_feed
 
 
 ```{r}
-# Bind altmetrics to metadata
+# Bind altmetrics to article metadata
 published_articles <- cbind(published_articles, preprint_altmetrics)
 published_articles <- cbind(published_articles, published_altmetrics)
 control_articles <- cbind(control_articles, control_altmetrics)
@@ -722,7 +713,7 @@ control_articles <- cbind(control_articles, control_altmetrics)
 # Write to csv
 write.csv(published_articles, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
 write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
-rm(preprint_altmetrics, published_altmetrics, control_altmetrics)
+rm(preprint_altmetrics, published_altmetrics, control_altmetrics) # remove redundant variables
 ```
 
 
