@@ -3,268 +3,323 @@ title: "Examining the 'Early Access Effect' through bioRxiv preprints: data retr
 output: html_notebook
 ---
 
-# Examining the 'Early Access Effect' with bioRxiv preprints: data retrieval
+### This notebook provides code used to retrieve basic metadata records of bioRxiv preprints and their linked published papers from Crossref. Following extraction of this basic data, detailed metadata 
 
-## Initial Configuration
 
-```{r}
+# Initial Configuration
+
+```{r echo = T, results='hide'}
 # Call libraries
-library(curl)
-library(httr)
 library(tidyverse)
 library(jsonlite)
 library(lubridate)
-library(data.table)
-
+library(curl)
+library(httr)
+  
 # Credentials for APIs - these should be set in .Renviron file
 email <- Sys.getenv("EMAIL")
 altmetric_api_key <- Sys.getenv("ALTMETRIC_API_KEY")
 ```
 
-## Retrieve Summary Data
 
-* Assign months for which data will be retrieved
-```{r}
+```{r echo = T, results='hide'}
 # Generate start and end dates of months for period of data extraction. Note that crossref API accepts dates in character format
-startdates <- seq(as.Date("2013/11/1"), as.Date("2018/09/1"), "months")
-enddates <- seq(as.Date("2013/12/1"), as.Date("2018/10/1"), "months")-1
+startdates <- seq(ymd("2013-11-1"), ymd("2018-09-01"), by = "months")
+enddates <- startdates %m+% months(1) - 1
 months <- length(startdates)
 ```
 
-* Total number of bioRxiv preprints deposited
-```{r}
+# Retrieve Summary Data
+
+### Total number of bioRxiv preprints deposited
+```{r echo = T, results='hide'}
 # Set start and end dates for analysis
-startdate <- startdates[1]
-enddate <- enddates[length(enddates)]
-
+startdate <- first(startdates)
+enddate <- last(enddates)
+  
 # Query Crossref API for all preprints with a member id of 246 (corresponding to bioRxiv preprints) over time period
-url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=0&mailto=", email, sep="")
-response <- GET(url)
-data <- content(response)
-
-#Extract counts of preprints
+url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", startdate, ",until-posted-date:", enddate, "&rows=0&mailto=", email, sep="")
+data <- fromJSON(url)
+  
+#Extract counts
 count_p_all <- data$message$`facets`$`publisher-name`$values$`Cold Spring Harbor Laboratory`
-
-rm(url, response, data) # remove redundant variables
+  
+# Remove redundant variables
+rm(url, data) 
 ```
 
-* Total number of bioRxiv preprints deposited that have a linked published article in Crossref over time
-```{r}
+### Total number of bioRxiv preprints deposited that have a linked published article in Crossref over time
+```{r echo = T, results='hide'}
 # Query Crossref API for all preprints with a member id of 246 that also have a preprint relationship to another published article (relation.type:is-preprint-of)
 url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=0&mailto=", email, sep="")
-response <- GET(url)
-data <- content(response)
-
+data <- fromJSON(url)
+  
+# Extract counts
 count_p_matching <- data$message$`facets`$`publisher-name`$values$`Cold Spring Harbor Laboratory`
-
-rm(url, response, data, startdate, enddate) # remove redundant variables
+  
+# Remove redundant variables
+rm(url, data, startdate, enddate) 
 ```
 
-* Distribution of bioRxiv preprint deposits over time
-```{r}
-preprint_distributions = NULL 
-
+### Distribution of bioRxiv preprint deposits over time
+```{r echo = T, results='hide'}
+# Pre-allocate list for data
+data = list()
+  
+# Progress bar
+pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
+  
+# Iterate over months of analysis
 for (i in 1:months){
   
-  # All preprints
-  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", as.character(startdates[i]),",until-posted-date:",as.character(enddates[i]),"&rows=0&mailto=n.fraser@zbw.eu", sep="")
-  response <- GET(url)
-  Sys.sleep(0.02) # Crossref max API calls = 50/second
-  all_preprints <- content(response)$message$`total-results`
-
-  # Preprints with relationship to a published article
-  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:", as.character(startdates[i]),",until-posted-date:",as.character(enddates[i]),"&rows=0&mailto=n.fraser@zbw.eu", sep="")
-  response <- GET(url)
-  Sys.sleep(0.02) # Crossref max API calls = 50/second
-  matching_preprints <- content(response)$message$`total-results`
-
-  preprint_distributions <- rbind(preprint_distributions, data.frame(date = format(as.Date(startdates[i]), "%Y-%m"), "preprints" = all_preprints, "matching_preprints" = matching_preprints))
+  # Define URLs for API calls - separate calls for retrieving all preprints, and preprints that have a relationship to a published article
+  url_all <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", startdates[i], ",until-posted-date:", enddates[i],"&rows=0&mailto=", email, sep="")
+  url_related <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:", startdates[i], ",until-posted-date:", enddates[i], "&rows=0&mailto=", email, sep="")
+  
+  # Retrieve data
+  response_all <- fromJSON(url_all)
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  response_related <- fromJSON(url_related)
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Build tibble of results
+  data[[i]] <- tibble(
+    "date" = format(as.Date(startdates[i]), "%Y-%m"),
+    "preprints" = response_all$message$`total-results`,
+    "matching_preprints" = response_related$message$`total-results`
+  )
+  
+  setTxtProgressBar(pb, i)
+  
 }
-
-rm(i, url, response, all_preprints, matching_preprints) # remove redundant variables
+  
+# Bind data rows
+preprint_distributions <- bind_rows(data)
+  
+# Remove redundant variables
+rm(url_all, url_related, response_all, response_related, data, pb) 
 ```
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(preprint_distributions, file="data/bioRxiv_preprints_monthly_distribution.csv", row.names=FALSE)
 ```
 
-## Retrieve Article Metadata
-
-* DOIs, titles and posted dates and relation status (i.e. with published manuscripts) for all preprints deposited to bioRxiv
-```{r}
-# Build request function
-request <- function(startdate, enddate, rows, offset){
-  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", startdate, ",until-posted-date:", enddate,"&rows=", rows, "&offset=", offset, "&select=DOI,title,relation,posted&mailto=n.fraser@zbw.eu", sep="")
+### Basic metadata for all bioRxiv preprints
+```{r echo = T, results='hide'}
+# API request function
+request <- function(startdate, enddate, cursor){
+  
+  # URL for API call
+  url <- paste("https://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,from-posted-date:", startdate, ",until-posted-date:", enddate,"&rows=1000&cursor=", cursor, "&select=DOI,title,relation,posted&mailto=", email, sep="")
+  
+  # Make request
   response <- GET(url)
-  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Check for empty response (404)
   if (response$status_code == 404) { 
     return()
   }else{
-    content <- content(response)
-    data <- fromJSON(toJSON(content$message$items))
-    return(data)
+    return(response)
   }  
 }
-
-all_preprints_metadata <- NULL
-
+  
+# Crossref API can only serve 1000 rows per request. We loop over the dataset 1000 rows at a time and pass the cursor function to retrieve all results
+loops <- ceiling(sum(preprint_distributions$preprints)/1000)
+  
+# Pre-allocate list to store data
+metadata <- vector("list", length(loops))
+  
+# Set initial conditions
+startdate <- first(startdates)
+enddate <- last(enddates)
+cursor <- "*"
+  
 # Progress bar
-pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
-
-for (i in 1:months){
+pb <- txtProgressBar(min = 0, max = loops, initial= 0, style = 3)
   
-  # Crossref API can only serve 1000 rows, necessary to make multiple requests with offsets when >1000 results. Could also use cursor function - see API docs
-  loops <- ceiling(preprint_distributions$preprints[i]/1000)
+for (i in 1:loops) {
   
-  for (j in 1:loops) {
+  # Send request
+  response <- request(startdate, enddate, cursor)
   
-    # Send request
-    data <- request(as.character(startdates[i]), as.character(enddates[i]), 1000, (j-1)*1000)
-    
-    # Parse basic metadata
-    preprint_doi <- unlist(data$DOI, recursive = TRUE, use.names = TRUE)
-    preprint_title <- unlist(data$title, recursive = TRUE, use.names = TRUE)
-
-    preprint_posted_date = NULL
-    preprint_has_published_article = NULL
-    
-    for (k in 1:length(data$DOI)){
-      
-      # Parse preprint posted date
-      year <- unlist(data$posted$`date-parts`[[k]][[1]], recursive = TRUE, use.names = TRUE)
-      month <- unlist(data$posted$`date-parts`[[k]][[2]], recursive = TRUE, use.names = TRUE)
-      day <- unlist(data$posted$`date-parts`[[k]][[3]], recursive = TRUE, use.names = TRUE)
-      preprint_posted_date <- rbind(preprint_posted_date, data.frame("preprint_posted_date" = as.Date(paste(year, "-", month, "-", day, sep=""))))
-      
-      # Check if relationship to published article exists
-      if(length(data$relation$`is-preprint-of`[[k]]$id)>0){
-        published_article <- TRUE
-      } else {
-        published_article <- FALSE
-      }
-      preprint_has_published_article <- rbind(preprint_has_published_article, data.frame("preprint_has_published_article" = published_article))
-    }
-    
-    df <- data.frame("preprint_doi" = preprint_doi, "preprint_title" = preprint_title, " preprint_has_published_article" =  preprint_has_published_article, "preprint_posted_date" = preprint_posted_date)
-    
-    all_preprints_metadata <- rbind(all_preprints_metadata, df)
-    
+  # Retrieve data
+  data <- content(response)
+  data <- fromJSON(toJSON(data))
+  
+  # Update cursor - needs to be URL encoded
+  cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
+  
+  # Parse basic metadata
+  preprint_doi <- unlist(data$message$items$DOI, recursive = TRUE, use.names = TRUE)
+  preprint_title <- unlist(data$message$items$title, recursive = TRUE, use.names = TRUE)
+  
+  # Parse preprint posted date
+  parseDate <- function(x) {
+    year <- unlist(x[[1]], recursive = TRUE, use.names = TRUE)
+    month <- unlist(x[[2]], recursive = TRUE, use.names = TRUE)
+    day <- unlist(x[[3]], recursive = TRUE, use.names = TRUE)
+    date <- paste(year, month, day, sep="-")
+    return(date)
   }
+  preprint_posted_date <- map(data$message$items$posted$`date-parts`, parseDate)
+  
+  # Build tibble of results
+  metadata[[i]] <- tibble(
+    "preprint_doi" = as.character(preprint_doi), 
+    "preprint_title" = as.character(preprint_title), 
+    "preprint_posted_date" = as.character(preprint_posted_date)
+  )
+  
   setTxtProgressBar(pb, i)
+  
 }
-
-rm(request, pb, i, loops, j, data, preprint_doi, preprint_title, preprint_posted_date, k, year, month, day, preprint_has_published_article, published_article, df) # remove redundant variables
-
+  
+# Bind all data
+all_preprints_metadata <- bind_rows(metadata)
+  
+# Remove redundant variables
+rm(request, pb, i, loops, metadata, preprint_doi, preprint_title, preprint_posted_date, data, cursor, response, startdate, enddate, parseDate) 
 ```
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(all_preprints_metadata, file="data/bioRxiv_all_preprints_metadata.csv", row.names=FALSE)
 ```
 
-* DOI, title, category, posted dates and DOI of published paper, for bioRxiv preprints that have a link to a published paper in Crossref
-```{r}
-request <- function(startdate, enddate, rows, offset){
-  url <- paste("http://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=", rows, "&offset=", offset, "&select=DOI,title,group-title,relation,posted&mailto=", email, sep="")
+### Expanded metadata for bioRxiv preprints that have a link to a published paper in Crossref
+
+```{r results='hide'}
+# API request function
+request <- function(startdate, enddate, cursor){
+  
+  # URL for API call
+  url <- paste("http://api.crossref.org/types/posted-content/works?facet=publisher-name:*&filter=member:246,relation.type:is-preprint-of,from-posted-date:",startdate,",until-posted-date:",enddate,"&rows=1000&cursor=", cursor, "&select=DOI,title,group-title,relation,posted&mailto=", email, sep="")
+  
+  # Make request
   response <- GET(url)
-  Sys.sleep(0.02) # Crossref max API calls = 50/second
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Check for empty response (404)
   if (response$status_code == 404) { 
     return()
   }else{
-    content <- content(response)
-    if(length(content$message$items) == 0) {
-      return()
-    } else {
-      data <- fromJSON(toJSON(content$message$items))
-      return(data)
-    }
+    return(response)
   }
 }
 
-matching_preprints_metadata <- NULL
+# Crossref API can only serve 1000 rows per request. We loop over the dataset 1000 rows at a time and pass the cursor function to retrieve all results
+loops <- ceiling(sum(preprint_distributions$matching_preprints)/1000)
+
+# Pre-allocate list to store data
+metadata <- vector("list", length(loops))
+
+# Set initial conditions
+startdate <- first(startdates)
+enddate <- last(enddates)
+cursor <- "*"
 
 # Progress bar
-pb <- txtProgressBar(min = 0, max = months, initial= 0, style = 3)
+pb <- txtProgressBar(min = 0, max = loops, initial= 0, style = 3)
 
-for (i in 1:months){
+for (i in 1:loops){
   
   # Send request
-  data <- request(as.character(startdates[i]), as.character(enddates[i]), 1000, 0)
+  response <- request(startdate, enddate, cursor)
+
+  # Retrieve data
+  data <- content(response)
+  data <- fromJSON(toJSON(data))
   
-  if(!(length(data))){
-    setTxtProgressBar(pb, i)
-    next()
-  }
+  # Update cursor - needs to be URL encoded
+  cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
   
   # Parse basic metadata
-  preprint_doi <- unlist(data$DOI, recursive = TRUE, use.names = TRUE)
-  preprint_title <- unlist(data$title, recursive = TRUE, use.names = TRUE)
-  data$`group-title`[sapply(data$`group-title`, is.null)] <- NA
-  preprint_category <- if(length(data$`group-title`)) unlist(data$`group-title`, recursive = TRUE, use.names = TRUE)
-
-  preprint_posted_date = list()
-  preprint_published_doi = list()
+  preprint_doi <- unlist(data$message$items$DOI, recursive = TRUE, use.names = TRUE)
+  preprint_title <- unlist(data$message$items$title, recursive = TRUE, use.names = TRUE)
+  data$message$items$`group-title`[sapply(data$message$items$`group-title`, is.null)] <- NA
+  preprint_category <- unlist(data$message$items$`group-title`, recursive = TRUE, use.names = TRUE)
   
-  for (j in 1:length(data$relation$'is-preprint-of')){
-    # Parse preprint posted date
-    year <- unlist(data$posted$`date-parts`[[j]][[1]], recursive = TRUE, use.names = TRUE)
-    month <- unlist(data$posted$`date-parts`[[j]][[2]], recursive = TRUE, use.names = TRUE)
-    day <- unlist(data$posted$`date-parts`[[j]][[3]], recursive = TRUE, use.names = TRUE)
-    preprint_posted_date <- rbind(preprint_posted_date, data.frame("preprint_posted_date" = as.Date(paste(year, "-", month, "-", day, sep=""))))
-    # Parse DOI of linked published article
-    preprint_published_doi <- rbind(preprint_published_doi, data.frame("preprint_published_doi" = unlist(data$relation$`is-preprint-of`[[j]]$id, recursive = TRUE, use.names = TRUE)))
-   }
+  # Parse preprint posted date
+  parseDate <- function(x) {
+    year <- unlist(x[[1]], recursive = TRUE, use.names = TRUE)
+    month <- unlist(x[[2]], recursive = TRUE, use.names = TRUE)
+    day <- unlist(x[[3]], recursive = TRUE, use.names = TRUE)
+    date <- paste(year, month, day, sep="-")
+    return(date)
+  }
+  preprint_posted_date <- map(data$message$items$posted$`date-parts`, parseDate)
   
-  df <- data.frame("preprint_doi" = preprint_doi, "preprint_title" = preprint_title, "preprint_category" = preprint_category, "preprint_published_doi" = preprint_published_doi, "preprint_posted_date" = preprint_posted_date)
+  # Parse DOI of linked published paper
+  parsePublishedDOI <- function(x){
+    doi <- unlist(x[["id"]], recursive = TRUE, use.names = TRUE)
+  }
+  published_doi <- map(data$message$items$relation$`is-preprint-of`, parsePublishedDOI)
   
-  matching_preprints_metadata <- rbind(matching_preprints_metadata, df)
+  # Build tibble of results
+  metadata[[i]] <- tibble(
+    "preprint_doi" = as.character(preprint_doi),
+    "published_doi" = as.character(published_doi),
+    "preprint_title" = as.character(preprint_title), 
+    "preprint_posted_date" =  as.character(preprint_posted_date),
+    "preprint_category" = as.character(preprint_category)
+  )
   
   setTxtProgressBar(pb, i)
 }
 
-rm(data, df, year, month, day, preprint_published_doi, preprint_posted_date, preprint_doi, preprint_title, preprint_category, pb, i, j, request) # remove redundant variables
+# Bind all data
+matching_preprints_metadata <- bind_rows(metadata)
 
+# Remove redundant variables
+rm(request, pb, i, loops, metadata, preprint_doi, preprint_title, preprint_posted_date, preprint_category, preprint_published_doi, data, cursor, response, startdate, enddate) 
 ```
 
-
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(matching_preprints_metadata, file="data/bioRxiv_matching_preprints_metadata.csv", row.names=FALSE)
 ```
 
-* DOI, title, publisher, article type, issue, volume, journal title, journal issn and published date for published articles that are linked to bioRxiv preprints via Crossref. This step is slow as it requires indivudally iterating and making an API call for each DOI.
-```{r}
+### Metadata for published articles that are linked to bioRxiv preprints via Crossref. 
+```{r results='hide'}
+# API request function
 request <- function(doi){
+  
+  # URL for API call
   url <- paste("http://api.crossref.org/works/", doi, "?mailto=", email, sep="")
-  Sys.sleep(0.05) # Crossref max API calls = 50/second
+
+  # Make request
   response <- GET(url)
-  # Some DOIs resolve to 404 error
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Check for empty response (404)
   if (response$status_code == 404) { 
     return()
-  }
-  else{
-    content <- content(response)
-    data <- fromJSON(toJSON(content$message))
-    return(data)
+  }else{
+    return(response)
   }
 }
 
-published_articles_metadata <- NULL
+# We will loop over each individual DOI
+loops = length(matching_preprints_metadata$preprint_published_doi)
 
-len = length(matching_preprints_metadata$preprint_published_doi)
+# Pre-allocate list to store data
+metadata <- vector("list", length(loops))
 
 # Progress bar
-pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
+pb <- txtProgressBar(min = 0, max = loops, initial= 0, style = 3)
 
-for (i in 1:len){
+for (i in 1:loops){
   
   # Send request, ensure that DOI is character encoded
-  data <- request(as.character(matching_preprints_metadata$preprint_published_doi[i]))
+  response <- request(as.character(matching_preprints_metadata$published_doi[i]))
   
-  # Handle 404 errors - set metadata to NA
-  if(!(length(data))){
-    published_doi <- matching_preprints_metadata$preprint_published_doi[i]
+  # If no response, set all variables to empty
+  if(!length(response)){
+    
+    preprint_doi <- matching_preprints_metadata$preprint_doi[i] 
+    published_doi <- matching_preprints_metadata$published_doi[i] 
     published_publisher <- NA
     published_journal <- NA
     published_title <- NA
@@ -273,43 +328,360 @@ for (i in 1:len){
     published_volume <- NA
     published_date <- NA
     published_issn <- NA
-  } 
-  else{
-    # Extract relevant metadata
-    published_doi <- if (length(data$DOI)) data$DOI else matching_preprints_metadata$published_doi[i]
-    published_publisher <- if (length(data$publisher)) data$publisher else NA
-    published_type <- if (length(data$type)) data$type else NA
-    published_issue <- if (length(data$`journal-issue`$issue)) data$`journal-issue`$issue else NA
-    published_volume <- if (length(data$volume)) data$volume else NA
-    published_title <- if (length(data$title)) data$title else NA
-    published_journal <- if (length(data$`container-title`)) data$`container-title`[1] else NA
-    published_issn <- if (length(data$ISSN)) data$ISSN[1] else NA
     
+  } else{
+    
+    # Retrieve data
+    data <- content(response)
+    data <- fromJSON(toJSON(data))
+  
+    # Extract basic metadata
+    preprint_doi <- matching_preprints_metadata$preprint_doi[i]
+    published_doi <- if (length(data$message$DOI)) data$message$DOI else matching_preprints_metadata$published_doi[i]
+    published_publisher <- if (length(data$message$publisher)) data$message$publisher else NA
+    published_type <- if (length(data$message$type)) data$message$type else NA
+    published_issue <- if (length(data$message$`journal-issue`$issue)) data$message$`journal-issue`$issue else NA
+    published_volume <- if (length(data$message$volume)) data$message$volume else NA
+    published_title <- if (length(data$message$title)) data$message$title[1] else NA
+    published_journal <- if (length(data$message$`container-title`)) data$message$`container-title`[1] else NA
+    published_issn <- if (length(data$message$ISSN)) data$message$ISSN[1] else NA
+      
     # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page
-    year <- data$created$`date-parts`[[1]]
-    month <- data$created$`date-parts`[[2]]
-    day <- data$created$`date-parts`[[3]]
-    published_date <- data.frame("published_date" = as.Date(paste(year, "-", month, "-", day, sep="")))
+    year <- data$message$created$`date-parts`[[1]]
+    month <- data$message$created$`date-parts`[[2]]
+    day <- data$message$created$`date-parts`[[3]]
+    published_date <- paste(year, month, day, sep="-")
   }
   
-  df <- data.frame("published_doi" = published_doi, "published_publisher" = published_publisher, "published_journal" = published_journal, "published_title" = published_title, "published_type" = published_type, "published_issue" = published_issue, "published_volume" = published_volume, "published_date" = published_date, "published_issn" = published_issn)
-  
-  published_articles_metadata <- rbind(published_articles_metadata, df)
+  # Build tibble of results
+  metadata[[i]] <- tibble(
+    "preprint_doi" = as.character(preprint_doi),
+    "published_doi" = as.character(published_doi), 
+    "published_publisher" = as.character(published_publisher), 
+    "published_journal" = as.character(published_journal), 
+    "published_title" = as.character(published_title), 
+    "published_type" = as.character(published_type), 
+    "published_issue" = as.character(published_issue), 
+    "published_volume" = as.character(published_volume), 
+    "published_date" = as.character(published_date), 
+    "published_issn" = as.character(published_issn)
+  )
 
   setTxtProgressBar(pb, i)
+  
 }
 
-rm(pb, i, year, month, day, df, published_date, published_title, published_type, published_issue, published_volume, published_publisher, published_doi, published_journal,published_issn, data, len, request) # remove redundant variables
+# Bind all data
+published_articles_metadata <- bind_rows(metadata)
+
+# Remove redundant variables
+rm(pb, i, year, month, day, df, published_date, published_title, published_type, published_issue, published_volume, published_publisher, published_doi, published_journal,published_issn, data, metadata, request, loops, response, parseDate, parsePublishedDOI)
 
 ```
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(published_articles_metadata, file="data/bioRxiv_published_articles_metadata.csv", row.names=FALSE)
 ```
 
-* Clean and merge metadata of preprints and their matching published papers
+### Control dataset
+
+Generate a table of journals and ISSNs. Retrieve all articles published by those journals over our time series of analysis, including publication dates of articles
+
 ```{r}
+
+# API request function
+request <- function(startdate, enddate, issn, cursor){
+  
+  # URL for API call. 
+  url <- paste("http://api.crossref.org/journals/", issn, "/works?filter=from-created-date:", startdate,",until-created-date:",enddate,"&rows=1000&cursor=", cursor, "&select=DOI,title,created&mailto=", email, sep="")
+  
+  # Make request
+  response <- GET(url)
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Check for empty response 
+  if (response$status_code == 404 || !length(response)){ 
+    return()
+  } else  {
+    return(response)
+  }
+}
+
+parseData <- function(data){
+  
+  # Parse basic metadata
+  control_doi <- unlist(data$message$items$DOI, recursive = TRUE, use.names = TRUE)
+  data$message$items$title[sapply(data$message$items$title, is.null)] <- NA
+  control_title <- unlist(data$message$items$title, recursive = TRUE, use.names = TRUE)
+  
+  # Parse preprint posted date
+  parseDate <- function(x) {
+    year <- unlist(x[[1]], recursive = TRUE, use.names = TRUE)
+    month <- unlist(x[[2]], recursive = TRUE, use.names = TRUE)
+    day <- unlist(x[[3]], recursive = TRUE, use.names = TRUE)
+    date <- paste(year, month, day, sep="-")
+    return(date)
+  }
+  control_published_date <- map(data$message$items$created$`date-parts`, parseDate)
+  
+  # Build tibble of results
+  metadata <- tibble(
+    "control_doi" = as.character(control_doi), 
+    "control_title" = as.character(control_title), 
+    "control_published_date" = as.character(control_published_date)
+  )
+  
+  return(metadata)
+  
+}
+
+published_articles <- read.csv("data/bioRxiv_published_articles_metadata.csv", header=TRUE)
+
+# Retrieve list of ISSNs to iterate over
+issns <- published_articles$published_issn
+issns <- as_tibble(table(issns))
+
+loops <- length(issns$issns)
+
+# Pre-allocate list to store data
+metadata <- vector("list", length(loops))
+
+startdate <- first(startdates)
+enddate <- last(enddates)
+
+# Progress bar
+pb <- txtProgressBar(min = 0, max = loops, initial= 0, style = 3)
+
+for (i in 1:loops){
+  
+  cursor <- "*"
+  issn <- issns$issns[i]
+  
+  # Send request
+  response <- request(startdate, enddate, issn, cursor)
+  
+  # If no response, set values to empty
+  if(!length(response)){
+    metadata[[i]] <- tibble(
+      "control_doi" = NA, 
+      "control_title" = NA, 
+      "control_published_date" = NA
+    )
+  } else {
+    
+    # Retrieve data
+    data <- fromJSON(toJSON(content(response)))
+    
+    results <- data$message$`total-results`
+    
+    if(results <= 1000) {
+      metadata[[i]] <- parseData(data)
+    } else {
+      pages <- ceiling(results/1000)
+      temp_metadata <- vector("list", length(pages))
+      temp_metadata[[1]] <- parseData(data)
+      cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
+      for(j in 2:pages){
+        response <- request(startdate, enddate, issn, cursor)
+        data <- fromJSON(toJSON(content(response)))
+        temp_metadata[[j]] <- parseData(data)
+        cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
+      }
+      metadata[[i]] <- bind_rows(temp_metadata) 
+    }
+  }
+  setTxtProgressBar(pb, i)
+}
+
+control_articles <- bind_rows(metadata)
+```
+
+
+
+
+
+### Generate a control dataset for comparative analysis. As a first step we retrieve all articles published in the same journal-months as our dataset of articles with preprints
+```{r results='hide'}
+
+# API request function
+request <- function(startdate, enddate, issn, cursor){
+  
+  # URL for API call. 
+  url <- paste("http://api.crossref.org/journals/", issn, "/works?filter=from-created-date:",startdate,",until-created-date:",enddate,"&rows=1000&cursor=", cursor, "&select=DOI,title,publisher,container-title,volume,issue,created,type&mailto=", email, sep="")
+  
+  # Make request
+  response <- GET(url)
+  Sys.sleep(0.05) # Don't hit the API too hard! Crossref max API calls = 50/second
+  
+  # Check for empty response 
+  if (response$status_code == 404 || !length(response)){ 
+    return()
+  } else  {
+    return(response)
+  }
+}
+
+parseData <- function(data){
+  
+  # Parse basic metadata
+  control_doi <- unlist(data$message$items$DOI, recursive = TRUE, use.names = TRUE)
+  data$message$items$title[sapply(data$message$items$title, is.null)] <- NA
+  control_title <- unlist(data$message$items$title, recursive = TRUE, use.names = TRUE)
+  
+  # Parse preprint posted date
+  parseDate <- function(x) {
+    year <- unlist(x[[1]], recursive = TRUE, use.names = TRUE)
+    month <- unlist(x[[2]], recursive = TRUE, use.names = TRUE)
+    day <- unlist(x[[3]], recursive = TRUE, use.names = TRUE)
+    date <- paste(year, month, day, sep="-")
+    return(date)
+  }
+  control_published_date <- map(data$message$items$created$`date-parts`, parseDate)
+  
+  # Build tibble of results
+  d <- tibble(
+    "published_doi" = as.character(published_articles$published_doi[i]),
+    "control_doi" = as.character(control_doi), 
+    "control_title" = as.character(control_title), 
+    "control_published_date" = as.character(control_published_date),
+    "control_results" = data$message$`total-results`
+  )
+  
+  return(d)
+}
+
+published_articles <- read.csv("data/bioRxiv_published_articles_metadata.csv", header=TRUE)
+
+# Loop over each article in the published dataset
+loops <- length(published_articles$published_doi)
+
+#Progress bar
+pb <- txtProgressBar(min = 0, max = loops, initial= 0, style = 3)
+
+# Pre-allocate list to store data
+# metadata <- vector("list", length(loops))
+
+for(i in 5469:loops) {
+  
+  # Set initial values
+  startdate <- as.Date(published_articles$published_date[i])-15
+  enddate <- as.Date(published_articles$published_date[i])+15
+  issn <- as.character(published_articles$published_issn[i])
+  cursor <- "*"
+  
+  # Send request
+  response <- request(startdate, enddate, issn, cursor)
+  
+  setMetadataEmpty <- function(){
+    metadata[[i]] <- tibble(
+      "published_doi" = as.character(published_articles$published_doi[i]),
+      "control_doi" = NA, 
+      "control_title" = NA, 
+      "control_published_date" = NA,
+      "control_results" = NA
+    )
+    return(metadata[[i]])
+  }
+  
+  # If no response, set values to empty
+  if(!length(response)){
+    setMetadataEmpty()
+  } else {
+    
+    # Retrieve data
+    data <- fromJSON(toJSON(content(response)))
+    
+    results <- data$message$`total-results`
+    
+    if(!length(results)){
+      setMetadataEmpty()
+    }
+    else if(results <= 1000) {
+      metadata[[i]] <- parseData(data)
+    } else {
+      pages <- ceiling(results/1000)
+      temp_metadata <- vector("list", length(pages))
+      temp_metadata[[1]] <- parseData(data)
+      cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
+      for(j in 2:pages){
+        response <- request(startdate, enddate, issn, cursor)
+        data <- fromJSON(toJSON(content(response)))
+        temp_metadata[[j]] <- parseData(data)
+        cursor <- URLencode(data$message$`next-cursor`, reserved=TRUE)
+      }
+      metadata[[i]] <- bind_rows(temp_metadata)
+    }
+  }
+  
+  setTxtProgressBar(pb, i)
+  
+}
+
+control_articles <- bind_rows(metadata)
+
+rm(startdate, enddate, issn, control_doi, control_title, control_issue, control_volume, control_journal, control_publisher, df, pb, len, request) # remove redundant variables
+
+```
+
+```{r echo = T, results='hide'}
+# Write results to csv
+write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
+```
+
+# Clean data for WoS extraction
+```{r}
+# Read data
+published_articles_wos <- read.csv(file="data/bioRxiv_published_articles_metadata.csv", header=TRUE)
+control_articles_wos <- read.csv(file="data/bioRxiv_control_articles_metadata.csv", header=TRUE)
+
+# Convert all titles and DOIs to upper case for matching
+published_articles_wos$published_doi <- toupper(published_articles_wos$published_doi)
+published_articles_wos$published_title <- toupper(published_articles_wos$published_title)
+control_articles_wos$control_doi <- toupper(control_articles_wos$control_doi)
+control_articles_wos$control_title <- toupper(control_articles_wos$control_title)
+
+# Remove duplicates in published articles (some authors add more than one version of a preprint)
+published_articles_wos <- published_articles_wos[!duplicated(published_articles_wos$published_doi), ]
+
+# Remove NA values in DOIs
+published_articles_wos <- published_articles_wos[complete.cases(published_articles_wos$published_doi), ]
+control_articles_wos <- control_articles_wos[complete.cases(control_articles_wos$control_doi), ]
+
+# Strip line breaks
+published_articles_wos$published_doi <- gsub("[\r\n]", "", published_articles_wos$published_doi)
+published_articles_wos$published_title <- gsub("[\r\n]", "", published_articles_wos$published_title)
+control_articles_wos$control_doi <- gsub("[\r\n]", "", control_articles_wos$control_doi)
+control_articles_wos$control_title <- gsub("[\r\n]", "", control_articles_wos$control_title)
+
+# Trim surrounding whitespace
+published_articles_wos$published_doi <- trimws(published_articles_wos$published_doi)
+published_articles_wos$published_title <- trimws(published_articles_wos$published_title)
+control_articles_wos$control_doi <- trimws(control_articles_wos$control_doi)
+control_articles_wos$control_title <- trimws(control_articles_wos$control_title)
+
+```
+
+
+
+```{r}
+# Write results to csv
+write.csv(published_articles_wos, file="data/bioRxiv_published_articles_metadata_wos.csv", row.names=FALSE)
+write.csv(control_articles_wos, file="data/bioRxiv_control_articles_metadata_wos.csv", row.names=FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+* Clean and merge metadata of preprints and their matching published papers
+```{r echo = T, results='hide'}
 # Combine matching preprints and published articles files
 matching_preprints_metadata_subset <- subset(matching_preprints_metadata, select = -c(preprint_published_doi))
 clean <- cbind(matching_preprints_metadata_subset, published_articles_metadata)
@@ -341,106 +713,17 @@ rm(matching_preprints_metadata_subset, preprints_duplicates, published_duplicate
 
 ```
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(clean, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
 rm(clean)
-```
-
-
-* Generate a control dataset for comparative analysis. One article is sampled at random from the same journal and calendar month as each published article with a bioRxiv preprint. 
-```{r}
-
-request <- function(startdate, enddate, issn){
-  # limit request to journal articles (type=5) and articles that are not updates (PloS classifies these as journal-article)
-  url <- paste("http://api.crossref.org/journals/", issn, "/works?filter=from-created-date:",startdate,",until-created-date:",enddate,",type:journal-article,is-update:false&rows=1000&select=DOI,title,publisher,container-title,volume,issue,created,type&mailto=", email, sep="")
-  response <- GET(url)
-  Sys.sleep(0.05) #Crossref server max requests = 50/second
-  # Some ISSNs resolve to 404 error
-  if (response$status_code == 404) {
-    return()
-  }
-  else{
-    content <- httr::content(response)
-    data <- fromJSON(toJSON(content$message$items))
-    return(data)
-  }
-}
-
-published_articles <- read.csv("data/bioRxiv_preprints_published_articles_metadata.csv", header=TRUE)
-
-len <- length(published_articles$published_doi)
-
-#Progress bar
-pb <- txtProgressBar(min = 0, max = len, initial= 0, style = 3)
-
-control_dataset = NULL
-
-for(i in 1:len) {
-  
-  # query within 30 days of publication of article with preprint
-  startdate <- as.Date(as.character(published_articles$published_date[i]))-30
-  enddate <- as.Date(as.character(published_articles$published_date[i]))+30
-  issn <- as.character(published_articles$published_issn[i]) 
-  
-  # first we retrieve a sample of 10 results from Crossref 
-  data <- request(startdate, enddate, issn) 
-  data <- data[!data$DOI %in% published_articles$published_doi,]
-  # Articles with short titles removed (these are often editorial content)
-  data <- data[which(nchar(data$title)>=30),]
-  
-  # set values to NA if all data removed after previous step
-  if(!(length(data$DOI))){
-    control_doi <- NA
-    control_title <- NA
-    control_journal <- NA
-    control_type <- NA
-    control_issue <- NA
-    control_volume <- NA
-    control_publisher <- NA
-    control_date <- NA
-  } 
-  # else sample a random paper and extract metadata
-  else{
-    
-    data <- sample_n(data, 1)
-    
-    # Extract relevant metadata
-    control_doi <- if (length(data$DOI[[1]][1])) data$DOI[[1]][1] else NA
-    control_title <- if (length(data$title[[1]][1])) data$title[[1]][1] else NA
-    control_publisher <- if (length(data$publisher[[1]][1])) data$publisher[[1]][1] else NA
-    control_type <- if (length(data$type[[1]][1])) data$type[[1]][1] else NA
-    control_issue <- if (length(data$issue[[1]][1])) data$issue[[1]][1] else NA
-    control_volume <- if (length(data$volume[[1]][1])) data$volume[[1]][1] else NA
-    control_journal <- if (length(data$`container-title`[[1]][1])) data$`container-title`[[1]][1] else NA
-
-    # Extract created date - we use the crossref 'created-date' property as an indicator of when the article was first available through the journal page.
-    year <- data$created$`date-parts`[[1]][1]
-    month <- data$created$`date-parts`[[1]][2]
-    day <- data$created$`date-parts`[[1]][3]
-    control_date <- data.frame("control_date" = as.Date(paste(year, "-", month, "-", day, sep="")))
-  }
-  
-  df <- data.frame("control_doi" = control_doi, "control_comparison_doi" = published_articles$published_doi[i], "control_title" = control_title, "control_publisher" = control_publisher, "control_journal" = control_journal, "control_volume" = control_volume, "control_issue" = control_issue, "control_type" = control_type, "control_date" = control_date, "control_issn" = issn)
-  
-  control_dataset <- rbind(control_dataset, df)
-  
-  setTxtProgressBar(pb, i)
-  
-}
-
-rm(startdate, enddate, issn, control_doi, control_title, control_issue, control_volume, control_journal, control_publisher, df, pb, len, request) # remove redundant variables
 
 ```
 
-```{r}
-# Write results to csv
-write.csv(control_dataset, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
-```
 
 ## Add Impact Factors to published and control article metadata
 
-```{r}
+```{r echo = T, results='hide'}
 # IF breakdown
 merged_published <- NULL
 merged_control <- NULL
@@ -501,7 +784,7 @@ rm(sub, drops, sub_merged, impact, published_articles, control_articles) # remov
 
 ```
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(merged_published, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
 write.csv(merged_control, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
@@ -511,14 +794,14 @@ rm(merged_published, merged_control)
 ## OA status
 
 * Retrieve article OA data from Unpaywall for both published and control articles
-```{r}
+```{r echo = T, results='hide'}
 # Load data
 published_articles <- read.csv('data/bioRxiv_preprints_published_articles_metadata.csv', header=TRUE)
 control_articles <- read.csv('data/bioRxiv_control_articles_metadata.csv', header=TRUE)
 
 # Build request
 request <- function(doi){
-  url <- paste("api.unpaywall.org/v2/", doi, "?email=n.fraser@zbw.eu", sep="")
+  url <- paste("api.unpaywall.org/v2/", doi, "?email=", email, sep="")
   response <- GET(url)
   if (response$status_code == 404) {
     return() 
@@ -580,7 +863,7 @@ rm(len, pb, i, published_doi, control_doi, published, control, data, published_i
 ```
 
 
-```{r}
+```{r echo = T, results='hide'}
 # Bind OA data to article metadata
 published_oa_status <- published_oa_status[,c(2:5)]
 control_oa_status <- control_oa_status[,c(2:5)]
@@ -589,7 +872,7 @@ control_articles <- cbind(control_articles, control_oa_status)
 ```
 
 
-```{r}
+```{r echo = T, results='hide'}
 # Write results to csv
 write.csv(published_articles, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
 write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
@@ -600,7 +883,7 @@ rm(published_oa_status, control_oa_status)
 ## Altmetrics
 
 * Retrieve article altmetric data
-```{r}
+```{r echo = T, results='hide'}
 # Load data
 published_articles <- read.csv('data/bioRxiv_preprints_published_articles_metadata.csv', header=TRUE)
 control_articles <- read.csv('data/bioRxiv_control_articles_metadata.csv', header=TRUE)
@@ -696,12 +979,19 @@ for (i in 1:len){
   setTxtProgressBar(pb, i)
 }
 
+# Fix issue with control DOIs with NA values returning altmetric scores
+control_altmetric$control_score[is.na(control_altmetric$control_doi)] <- NA
+control_altmetric$control_tweets[is.na(control_altmetric$control_doi)] <- NA
+control_altmetric$control_facebook[is.na(control_altmetric$control_doi)] <- NA
+control_altmetric$control_feeds[is.na(control_altmetric$control_doi)] <- NA
+control_altmetric$control_mendeley[is.na(control_altmetric$control_doi)] <- NA
+
 rm(len, pb, i, preprint_score, preprint_tweets, preprint_facebook, preprint_feeds, preprint_mendeley, published_score, published_tweets, published_facebook, published_feeds, published_mendeley, control_score, control_tweets, control_facebook, control_feeds, control_mendeley) # remove redundant variables
 
 ```
 
 
-```{r}
+```{r echo = T, results='hide'}
 # Bind altmetrics to article metadata
 published_articles <- cbind(published_articles, preprint_altmetrics)
 published_articles <- cbind(published_articles, published_altmetrics)
@@ -709,7 +999,7 @@ control_articles <- cbind(control_articles, control_altmetrics)
 ```
 
 
-```{r}
+```{r echo = T, results='hide'}
 # Write to csv
 write.csv(published_articles, file="data/bioRxiv_preprints_published_articles_metadata.csv", row.names=FALSE)
 write.csv(control_articles, file="data/bioRxiv_control_articles_metadata.csv", row.names=FALSE)
