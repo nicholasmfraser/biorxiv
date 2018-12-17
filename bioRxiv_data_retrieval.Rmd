@@ -71,26 +71,22 @@ count_published_preprints <- cr_types(types="posted-content", works=TRUE,
 
 # Retrieve all preprints between two dates
 all_preprints <- function(startdate, enddate) {
-  
   count <- cr_types(types="posted-content", works=TRUE, 
                     facet="publisher-name:*", filter=c(member = 246, 
                     from_posted_date = as.character(startdate), 
                     until_posted_date = as.character(enddate)), 
                     limit=0)$facets$`publisher-name`$V1
-  
   return(count)
 }
 
 # Retrieve all preprints with a link to a published paper between two dates
 published_preprints <- function(startdate, enddate) {
-  
   count <- cr_types(types="posted-content", works=TRUE, 
                     facet="publisher-name:*", filter=c(member = 246, 
                     relation.type = "is-preprint-of", 
                     from_posted_date = as.character(startdate), 
                     until_posted_date = as.character(enddate)), 
                     limit=0)$facets$`publisher-name`$V1
-  
   return(count)
 }
 
@@ -135,7 +131,9 @@ preprints_metadata_cr <- tibble(
 )
 
 # Write results to csv
-write.csv(preprints_metadata_cr, file="data/preprints_cr.csv", row.names=FALSE)
+write.csv(preprints_metadata_cr, 
+          file="data/preprints_cr.csv", 
+          row.names=FALSE)
 
 # Remove redundant variables
 rm(data)
@@ -146,8 +144,13 @@ rm(data)
 
 ```{r results='hide'}
 
-# To retrieve relationships, we need to use the rcrossref 'low level' API (cr_types_)
-data <- cr_types_(types="posted-content", works=TRUE, filter=c(member = 246, relation.type = "is-preprint-of", from_posted_date = as.character(startdate), until_posted_date = as.character(enddate)), cursor="*", limit=1000, cursor_max=count_published_preprints, parse=TRUE, select=c("DOI", "relation", "issued"))
+# To retrieve relationships, we use the rcrossref low level API (cr_types_)
+data <- cr_types_(types="posted-content", works=TRUE, 
+                  filter=c(member = 246, relation.type = "is-preprint-of", 
+                  from_posted_date = as.character(startdate), 
+                  until_posted_date = as.character(enddate)), 
+                  cursor="*", limit=1000, cursor_max=count_published_preprints, 
+                  parse=TRUE, select=c("DOI", "relation", "issued"))
 
 # Extract individual items
 items <- unlist(sapply(data, function(x) x$message$items), recursive=FALSE)
@@ -155,7 +158,10 @@ items <- unlist(sapply(data, function(x) x$message$items), recursive=FALSE)
 # Build data frame
 preprints_published_articles_cr <- tibble(
   "cr_preprint_doi" = sapply(items, function(x) x$DOI),
-  "cr_preprint_posted" = sapply(items, function(x) paste0(x$issued$`date-parts`[[1]][1], "-", x$issued$`date-parts`[[1]][2], "-", x$issued$`date-parts`[[1]][3])),
+  "cr_preprint_posted" = sapply(items, 
+                                function(x) paste0(x$issued$`date-parts`[[1]][1], 
+                                "-", x$issued$`date-parts`[[1]][2], 
+                                "-", x$issued$`date-parts`[[1]][3])),
   "cr_published_doi" = sapply(items, function(x) x$relation$`is-preprint-of`[[1]]$id)
 )
 
@@ -180,10 +186,14 @@ preprints_published_articles_cr <- preprints_published_articles_cr %>%
   mutate(cr_published_doi = tolower(cr_published_doi))
 
 # Join relationship and title data
-preprints_published_articles_cr <- inner_join(preprints_published_articles_cr, published_articles, by=c("cr_published_doi"))
+preprints_published_articles_cr <- inner_join(preprints_published_articles_cr, 
+                                              published_articles, 
+                                              by=c("cr_published_doi"))
 
 # Write results to csv
-write.csv(preprints_published_articles_cr, file="data/preprints_published_articles_cr.csv", row.names=FALSE)
+write.csv(preprints_published_articles_cr, 
+          file="data/preprints_published_articles_cr.csv", 
+          row.names=FALSE)
 
 rm(data, items, published_articles)
 
@@ -195,13 +205,17 @@ rm(data, items, published_articles)
 
 ```{r results='hide'}
 
+# Select columns, remove whitespace and line breaks
 cr_published_wos_matching <- preprints_published_articles_cr %>%
   select(cr_preprint_doi, cr_published_doi, cr_published_title) %>%
-  mutate(cr_published_doi = gsub("[\r\n]", "", cr_published_doi), cr_published_title = gsub("[\r\n]", "", cr_published_title)) %>% # Remove line breaks
-  mutate(cr_published_doi = str_trim(cr_published_doi), cr_published_title = str_trim(cr_published_title)) # Trim surrounding whitespace
+  mutate(cr_published_doi = gsub("[\r\n]", "", cr_published_doi), 
+         cr_published_title = gsub("[\r\n]", "", cr_published_title)) %>% 
+  mutate(cr_published_doi = str_trim(cr_published_doi), cr_published_title = str_trim(cr_published_title)) 
 
 # Write results to csv
-write.csv(cr_published_wos_matching, file="data/KB/input/cr_published_wos_matching.csv", row.names=FALSE)
+write.csv(cr_published_wos_matching, 
+          file="data/KB/input/cr_published_wos_matching.csv", 
+          row.names=FALSE)
 
 # Remove redundant variables
 rm(cr_published_wos_matching)
@@ -226,7 +240,9 @@ cr_published_wos_matched <- read_csv(file="data/KB/output/cr_published_wos_match
 
 ```
 
-### Relationships between published articles and preprints in Crossref are incomplete. Preprints that do not have a relationship in Crossref are matched to WoS articles via fuzzy matching of titles and first names
+### Relationships between published articles and preprints in Crossref are incomplete. 
+### Preprints that do not have a relationship in Crossref are matched to 
+### WoS articles via fuzzy matching of titles and first names
 
 ### Clean and prepare preprint data to be matched
 
@@ -240,8 +256,12 @@ cr_preprints_wos_matching <- preprints_metadata_cr %>%
   mutate(cr_preprint_posted_year = year(as.Date(cr_preprint_posted))) %>%
   mutate(cr_preprint_title = tolower(cr_preprint_title)) %>% 
   mutate(cr_preprint_author = tolower(cr_preprint_author)) %>%
-  mutate(cr_preprint_doi = gsub("[\r\n]", "", cr_preprint_doi), cr_preprint_title = gsub("[\r\n]", "", cr_preprint_title), cr_preprint_author = gsub("[\r\n]", "", cr_preprint_author)) %>% # Remove line breaks
-  mutate(cr_preprint_doi = str_trim(cr_preprint_doi), cr_preprint_title = str_trim(cr_preprint_title), cr_preprint_author = str_trim(cr_preprint_author)) %>% # Trim surrounding whitespace
+  mutate(cr_preprint_doi = gsub("[\r\n]", "", cr_preprint_doi), 
+         cr_preprint_title = gsub("[\r\n]", "", cr_preprint_title), 
+         cr_preprint_author = gsub("[\r\n]", "", cr_preprint_author)) %>% 
+  mutate(cr_preprint_doi = str_trim(cr_preprint_doi), 
+         cr_preprint_title = str_trim(cr_preprint_title), 
+         cr_preprint_author = str_trim(cr_preprint_author)) %>% 
  select(cr_preprint_doi, cr_preprint_title, cr_preprint_author, cr_preprint_posted_year)
   
 # Write results to csv
@@ -250,7 +270,8 @@ write.csv(cr_preprints_wos_matching, file="data/KB/input/cr_preprints_wos_matchi
 rm(cr_preprints_wos_matching)
 ```
 
-### We retrieve all articles with the same author last name, published after the date of preprint deposition
+### We retrieve all articles with the same author last name, 
+### published after the date of preprint deposition
 
 Input:data/KB/input/cr_preprints_wos_matching.csv -> BIORXIV_CR_PREPRINTS
 SQL: cr_preprints_wos_matching.sql
@@ -261,13 +282,14 @@ Output: data/KB/output/cr_preprints_wos_matched.csv
 ```{r results='hide'}
 
 # Read data of WoS articles. CAUTION: Large file
-wos_articles <- read_csv(file="data/KB/output/cr_preprints_wos_matched.csv", col_names=TRUE)
+wos_articles <- read_csv(file="data/KB/output/cr_preprints_wos_matched.csv", 
+                         col_names=TRUE)
 
-# Prepare data for matching
+# Prepare data for matching - set columns to lowercase and remove duplicates
 wos_articles <- wos_articles %>%
   mutate(LASTNAME = tolower(LASTNAME)) %>%
   mutate(ARTICLE_TITLE = tolower(ARTICLE_TITLE)) %>%
-  filter(!PK_ITEMS %in% cr_published_wos_matched$PK_ITEMS) # Remove any potential duplicates
+  filter(!PK_ITEMS %in% cr_published_wos_matched$PK_ITEMS) 
 
 # Fuzzy matching function. Returns best article match and the matching accuracy
 getMatch <- function(item) {
@@ -280,15 +302,24 @@ getMatch <- function(item) {
   if(!length(w$LASTNAME)){
     return(NA)
   } else {
-    # Fuzzy match (method "jw" = Jaro-Winkler distance. Can experiment with similarity percentage (inverse of maxDist). 80% (maxDist=0.2) seems to be good. Below 70% results in too many false positives)
-    index <- amatch(item["cr_preprint_title"], w$ARTICLE_TITLE, method="jw", nomatch = NA_integer_, maxDist = 0.2)
+    # Fuzzy match (method "jw" = Jaro-Winkler distance)
+    # Can experiment with similarity percentage (inverse of maxDist). 
+    # 80% (maxDist=0.2) seems to be good. 
+    # Below 70% results in too many false positives
+    index <- amatch(item["cr_preprint_title"], 
+                    w$ARTICLE_TITLE, 
+                    method="jw", 
+                    nomatch = NA_integer_, 
+                    maxDist = 0.2)
     if(is.na(index)) {
       return(NA)
     } else {
       match <- w[index,]
       match["cr_preprint_doi"] <- item["cr_preprint_doi"]
       match["cr_preprint_title"] <- item["cr_preprint_title"]
-      match["match_accuracy"] <- stringdist(item["cr_preprint_title"], match$ARTICLE_TITLE, method="jw")
+      match["match_accuracy"] <- stringdist(item["cr_preprint_title"], 
+                                            match$ARTICLE_TITLE, 
+                                            method="jw")
       return(match)
     }
   }
@@ -349,10 +380,14 @@ single_cat <- categories %>%
 
 multi_cat <- categories %>%
   filter(PK_CLASSIFICATIONS == 111) %>%
-  filter(!PK_ITEMS %in% single_cat$PK_ITEMS) # Two items are classified as multidisciplinary and single discipline. We assign them to the single discipline category.
+  filter(!PK_ITEMS %in% single_cat$PK_ITEMS)
 
-write.csv(single_cat, file="data/KB/input/published_single_category.csv", row.names=FALSE)
-write.csv(multi_cat, file="data/KB/input/published_multi_category.csv", row.names=FALSE)
+write.csv(single_cat, 
+          file="data/KB/input/published_single_category.csv", 
+          row.names=FALSE)
+write.csv(multi_cat, 
+          file="data/KB/input/published_multi_category.csv", 
+          row.names=FALSE)
 
 rm(categories)
 
