@@ -30,7 +30,7 @@ httr::set_config(config(ssl_version = 5, ssl_verifypeer = 0L, ssl_verifyhost = 0
 # Credentials for APIs - these should be set in .Renviron file
 altmetric_api_key <- Sys.getenv("ALTMETRIC_API_KEY")
 
-# Generate start and end dates of months for period of data extraction. We are interested in the time between the launch of bioRxiv in November 2013, and the end 2017 (50 months total)
+# Generate start and end dates of months for period of data extraction
 startdates <- seq(ymd("2013-11-1"), ymd("2017-12-01"), by = "months")
 enddates <- startdates %m+% months(1) - 1
 months <- length(startdates)
