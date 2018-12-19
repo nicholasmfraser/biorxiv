@@ -11,11 +11,12 @@ output: html_notebook
 
 # Call libraries
 library(tidyverse)
-library(jsonlite)
-library(lubridate)
-library(httr)
 library(stringdist)
 library(rcrossref)
+
+# Check if we use these?
+library(jsonlite)
+library(httr)
 
 # Initial config of libraries
 httr::set_config(config(ssl_version=5, ssl_verifypeer=0L, ssl_verifyhost=0L))
@@ -123,7 +124,7 @@ data <- cr_types(types="posted-content", works=TRUE,
 
 # Build data frame
 # We only want to keep the family name of the first author
-preprints_metadata_cr <- tibble(
+preprints_cr <- tibble(
   "cr_preprint_doi" = as.character(data$doi),
   "cr_preprint_title" = as.character(data$title),
   "cr_preprint_posted" = as.character(data$issued),
@@ -131,7 +132,7 @@ preprints_metadata_cr <- tibble(
 )
 
 # Write results to csv
-write.csv(preprints_metadata_cr, 
+write.csv(preprints_cr, 
           file="data/preprints_cr.csv", 
           row.names=FALSE)
 
@@ -248,10 +249,10 @@ cr_published_wos_matched <- read_csv(file="data/KB/output/cr_published_wos_match
 
 ```{r results='hide'}
 
-preprints_metadata_cr <- read_csv(file="data/preprints_cr.csv")
+preprints_cr <- read_csv(file="data/preprints_cr.csv")
 
 # Subset preprints without a matching paper in Crossref for WoS matching
-cr_preprints_wos_matching <- preprints_metadata_cr %>%
+cr_preprints_wos_matching <- preprints_cr %>%
   filter(!cr_preprint_doi %in% cr_published_wos_matched$CR_PREPRINT_DOI) %>%
   mutate(cr_preprint_posted_year = year(as.Date(cr_preprint_posted))) %>%
   mutate(cr_preprint_title = tolower(cr_preprint_title)) %>% 
@@ -445,10 +446,9 @@ published_distinct <- published_data %>%
   distinct(PK_ITEMS)
 
 published_categories <- published_data %>%
-  filter(CLASSIFICATION_1 != "Multidisciplinary Sciences") %>%
+  filter(CLASSIFICATION != "Multidisciplinary Sciences") %>%
   group_by(PK_ITEMS, FK_ISSUES) %>% 
-  count(CLASSIFICATION_1) %>% 
-  rename(CLASSIFICATION = CLASSIFICATION_1) %>%
+  count(CLASSIFICATION) %>% 
   top_n(1) %>%
   ungroup
 
@@ -457,30 +457,74 @@ control_distinct <- control_data %>%
 
 control_categories <- control_data %>% 
   filter(CLASSIFICATION != "Multidisciplinary Sciences") %>%
-  filter(PK_ITEMS %in% published_categories$PK_ITEMS) %>%
+  filter(!PK_ITEMS %in% published_categories$PK_ITEMS) %>%
   group_by(PK_ITEMS, FK_ISSUES) %>%
   count(CLASSIFICATION) %>% 
-  top_n(1) %>%
   ungroup
 
 matches <- left_join(published_categories, control_categories, by=c("FK_ISSUES", "CLASSIFICATION")) %>%
   group_by(PK_ITEMS.x) %>%
   arrange(desc(n.y)) %>%
   top_n(1) %>%
-  sample_n(1)
+  sample_n(1) %>%
+  rename(PK_ITEMS_PUBLISHED = PK_ITEMS.x, PK_ITEMS_CONTROL = PK_ITEMS.y) %>%
+  select(PK_ITEMS_PUBLISHED, PK_ITEMS_CONTROL)
 
+# Write data to csv
+write.csv(matches, file="data/KB/input/control_multidisciplinary_matches.csv", row.names=FALSE)
+
+rm(matches, published_data, control_data, published_distinct, control_distinct, control_categories, published_categories)
 
 ```
+
+### Extract full WoS records for the set of matched control articles
+
+Input: data/KB/input/control_multidisciplinary_matches.csv -> BIORXIV_MULTI_MATCHES
+SQL: published_control_multidisciplinary_matches.sql
+Output: data/KB/out/control_multidisciplinary_articles.csv
+
 
 ### Clean and merge single and multidisciplinary datasets
 
 ```{r results='hide'}
 
+multi_cat_articles <- read_csv("data/KB/output/control_multidisciplinary_articles.csv")
+
+# Prepare data for matching
+single_cat <- single_cat %>%
+  select(-c(FK_SOURCES.x, PK_CLASSIFICATIONS, CLASSIFICATION)) %>%
+  rename(PK_ITEMS_PUBLISHED = PK_ITEMS.x, PK_ITEMS = PK_ITEMS.y, FK_SOURCES= FK_SOURCES.y) %>%
+  mutate(SOURCE_CATEGORY = "Single discipline")
+
+multi_cat_articles <- multi_cat_articles %>%
+  mutate(SOURCE_CATEGORY = "Mutidisciplinary")
+
+control_articles <- bind_rows(multi_cat_articles, single_cat)
+
+write.csv(control_articles, file="data/control_articles.csv", row.names=FALSE)
+
+rm(single_cat, multi_cat_articles)
 ```
 
-### Retrieve Crossref publication dates for all items and finalize datasets
+### Final datasets
 
 ```{r results='hide'}
+
+published_articles_final <- published_articles %>%
+  mutate(TYPE = "published") %>%
+  select(-c(CR_PREPRINT_DOI)) %>%
+  filter(PK_ITEMS %in% control_articles$PK_ITEMS_PUBLISHED)
+
+control_articles_final <- control_articles %>%
+  mutate(TYPE = "control") %>%
+  select(-c(PK_ITEMS_PUBLISHED, SOURCE_CATEGORY))
+
+write.csv(published_articles_final, file="data/published_articles_final.csv", row.names=FALSE)
+write.csv(control_articles_final, file="data/control_articles_final.csv", row.names=FALSE)
+
+
+### There are NA values appearing in control articles. Why? Deleted manually for now. Need to check.
+
 
 ```
 
@@ -488,19 +532,35 @@ matches <- left_join(published_categories, control_categories, by=c("FK_ISSUES",
 ### Retrieve citing articles
 
 Published articles:
-Input:
-SQL Query:
-Output:
+Input: data/published_articles_final.csv -> BIORXIV_PUBLISHED_FINAL
+SQL Query: published_citing_articles.sql
+Output: data/KB/output/published_citing_articles.csv
 
 Control articles:
-Input:
-SQL Query:
-Output: 
+Input: data/control_articles_final.csv -> BIORXIV_CONTROL_FINAL
+SQL Query: control_citing_articles.sql
+Output: data/KB/output/control_citing_articles.csv
 
 
-### Retrieve Crossref publication dates for citing items
+### Retrieve Crossref publication dates for all items
 
 ```{r results='hide'}
+# Published articles
+published_data <- cr_works_(dois = published_articles_final$DOI, .progress="text", parse=T)
+
+# Control articles
+control_data <- cr_works_(dois = control_articles_final$DOI, .progress="text", parse=T)
+
+```
+
+```{r}
+
+
+published_citing_articles <- read_csv("data/KB/output/published_citing_articles.csv")
+control_citing_articles <- read_csv("data/KB/output/control_citing_articles.csv")
+
+published_citing_data <- cr_works_(dois = published_citing_articles$DOI, .progress="text", parse=T)
+control_citing_data <- cr_works_(dois = control_citing_articles$DOI, .progress="text", parse=T)
 
 ```
 
