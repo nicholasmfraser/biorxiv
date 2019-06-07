@@ -1,0 +1,34 @@
+DELETE FROM 
+  BIORXIV_PUBLISHED_ARTICLES 
+WHERE
+  FK_ITEMS IN (
+    SELECT
+      FK_ITEMS
+    FROM (
+      SELECT
+        t1.PREPRINT_DOI, t1.ARTICLE_DOI, t1.FK_ITEMS, COUNT(*), ROW_NUMBER() OVER (PARTITION BY t1.PREPRINT_DOI ORDER BY COUNT(*) desc) AS RN
+      FROM
+        BIORXIV_PUBLISHED_ARTICLES t1
+      LEFT JOIN
+        SCOPUS_B_2018.CITINGITEMS t2
+      ON
+        t1.FK_ITEMS = t2.FK_ITEMS_CITED
+      WHERE t1.PREPRINT_DOI IN (
+        SELECT
+          PREPRINT_DOI
+        FROM (
+          SELECT DISTINCT
+            PREPRINT_DOI, COUNT(*) AS CNT
+          FROM
+            BIORXIV_PUBLISHED_ARTICLES
+          GROUP BY
+            PREPRINT_DOI)
+        WHERE
+          CNT > 1)
+      GROUP BY 
+        t1.PREPRINT_DOI, t1.ARTICLE_DOI, t1.FK_ITEMS)
+    WHERE 
+      RN = 2)
+            
+            
+            

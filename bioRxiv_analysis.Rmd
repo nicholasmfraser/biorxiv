@@ -1,0 +1,454 @@
+---
+title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv analysis"
+output: html_notebook
+---
+
+# Here we aggregate our raw datasets into useful datasets for analysis and figures
+
+### Load libraries
+
+```{r results='hide'}
+
+library(tidyverse)
+library(lubridate)
+
+```
+
+### How do our methodologies for discovering preprint-published article links overlap?
+
+```{r results='hide'}
+
+# Load the preprint-published links for each methodology
+# Crossref relationshiop
+CR <- read_csv("data/preprints_published_articles_cr.csv") %>% 
+  pull(PREPRINT_DOI)
+# bioRxiv website
+BIO <- read_csv("data/preprints_published_articles_bio.csv") %>% 
+  pull(PREPRINT_DOI)
+# Scopus fuzzy matching
+SCP <- read_csv("data/preprints_published_articles_scp.csv") %>% 
+  pull(PREPRINT_DOI)
+
+# Calculate the intersection between all possible permutations
+CR_BIO_SCP <- length(intersect(intersect(CR,BIO), SCP))
+CR_BIO <- length(intersect(CR,BIO)) - CR_BIO_SCP
+CR_SCP <- length(intersect(CR,SCP)) - CR_BIO_SCP
+BIO_SCP <- length(intersect(BIO,SCP)) - CR_BIO_SCP
+CR <- length(CR) - CR_BIO_SCP - CR_BIO - CR_SCP
+BIO <- length(BIO) - CR_BIO_SCP - CR_BIO - BIO_SCP
+SCP <- length(SCP) - CR_BIO_SCP - CR_SCP - BIO_SCP
+
+# Calculate the fit for Venn diagram
+fit <-  c("CR" = CR, "BIO" = BIO, "SCP" = SCP, 
+          "CR&BIO" = CR_BIO, "CR&SCP" = CR_SCP, 
+          "BIO&SCP" = BIO_SCP, "CR&BIO&SCP" = CR_BIO_SCP)
+
+# Save overlaps to csv
+enframe(fit) %>% 
+  rename(ENTITIES = name, OVERLAP = value) %>%
+  write_csv("data/analysis/matching_overlap.csv")
+
+# Remove redundant variables
+rm(preprints_published_articles_cr, 
+   preprints_published_articles_bio,
+   preprints_published_articles_scp,
+   CR_BIO_SCP, CR_BIo, CR_SCP, BIO_SCP, CR, BIO, SCP, fit)
+
+```
+
+### How have deposition of biorXiv preprints and publication outcomes changed over time?
+
+```{r results='hide'}
+
+# Join preprints dataset to dataset of preprints-published article links.
+# Aggregate sample size and percentage published at year and month level
+read_csv("data/preprints.csv") %>%
+  mutate(YEAR_MON = format(PREPRINT_POSTED_DATE, "%Y-%m"),
+         YEAR = format(PREPRINT_POSTED_DATE, "%Y")) %>%
+  left_join(read_csv("data/preprints_published_articles.csv")) %>%
+  mutate(IS_PUBLISHED = case_when(
+    is.na(ARTICLE_DOI) ~ 0,
+    !is.na(ARTICLE_DOI) ~ 1
+  )) %>%
+  group_by(YEAR, YEAR_MON) %>%
+  summarize(
+    DEPOSITED = n(),
+    PCT_PUBLISHED = sum(IS_PUBLISHED)/n()*100) %>%
+  write_csv(path="data/analysis/monthly_preprints.csv")
+
+```
+
+### What was the mean and median time between preprint submission and journal publication?
+
+```{r results='hide'}
+
+# Join preprints and articles, calculate difference in dates between preprint
+# posted date and article published date
+read_csv("data/preprints.csv") %>%
+  inner_join(read_csv("data/articles.csv") %>% 
+  filter(TYPE == "Deposited"), by="PREPRINT_DOI") %>%
+  mutate(publication_time = interval(date(PREPRINT_POSTED_DATE),
+                                     date(ARTICLE_CREATED_DATE)) %/% days(1)) %>%
+  summarize(mean_publication_time = mean(publication_time),
+            median_publication_time = median(publication_time))
+
+```
+
+### How many citations were there to bioRxiv-deposited and control articles in total?
+
+```{r results='hide'}
+
+# Citations to bioRxiv-deposited articles
+read_csv("data/articles.csv") %>% 
+  filter(TYPE == "Deposited") %>% 
+  inner_join(read_csv("data/citing_articles.csv"), 
+             by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  summarise(n = n())
+
+# Citations to control articles
+read_csv("data/articles.csv") %>% 
+  filter(TYPE == "Control") %>% 
+  inner_join(read_csv("data/citing_articles.csv"), 
+             by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  summarise(n = n())
+
+```
+
+### How have citation rates of bioRxiv-deposited and control articles evolved over time?
+
+```{r results='hide'}
+
+# Read article data
+read_csv("data/articles.csv") %>%
+  # Join with citing articles
+  left_join(read_csv("data/citing_articles.csv"), 
+            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  select(PREPRINT_DOI, 
+         ARTICLE_DOI, 
+         ARTICLE_CREATED_DATE, 
+         CITING_ARTICLE_CREATED_DATE, 
+         TYPE) %>%
+  
+  mutate(
+    # Determine cited status of an article
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    # Calculate interval between publication and citation
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1),
+    # Calculate an articles maximum citation interval within our time period
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   ARTICLE_DOI, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   TYPE, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  # We only want to analyse the 36 month citation window
+  filter(CITATION_INTERVAL >= 0, 
+         CITATION_INTERVAL <= 36,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+  group_by(PREPRINT_DOI, TYPE, CITATION_INTERVAL) %>%
+  # Calculate summary statistics
+  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  group_by(TYPE, CITATION_INTERVAL) %>%
+  summarize(
+    N = n(),
+    CPP_MEAN = mean(LOG_CITATION_CNT),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
+  ) %>%
+  write_csv(path="data/analysis/monthly_articles_cpp.csv")
+
+```
+
+### What is the relationship between citation rates and impact factors?
+
+```{r results='hide'}
+
+# Join articles to citing articles, as previously. Additionally join
+# calculated impact factors on journal name and year, and aggregate into 
+# high, medium and low impact categories
+
+article_IF_citations <- read_csv("data/articles.csv") %>% 
+  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
+  left_join(read_csv("data/citing_articles.csv"), 
+            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  inner_join(read_csv("data/impact_factors.csv"), 
+             by=c("SOURCETITLE", "YEAR")) %>%
+  select(PREPRINT_DOI,
+         ARTICLE_DOI, 
+         ARTICLE_CREATED_DATE, 
+         CITING_ARTICLE_CREATED_DATE, 
+         TYPE,
+         IF) %>%
+  mutate(
+    IF_CLASS = case_when(
+      IF >= 8 ~ 'High IF',
+      IF < 8 & IF >= 4  ~ 'Medium IF',
+      IF < 4 ~ 'Low IF'
+    ),
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI,
+                   ARTICLE_DOI, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   TYPE,
+                   IF_CLASS,
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  filter(CITATION_INTERVAL >= 0, 
+         CITATION_INTERVAL <= 36,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+  group_by(PREPRINT_DOI, TYPE, IF_CLASS, CITATION_INTERVAL) %>%
+  summarize(CITATION_CNT = sum(CITED),
+            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  group_by(TYPE, IF_CLASS, CITATION_INTERVAL) %>%
+  summarize(
+    N = n(),
+    CPP_MEAN = mean(LOG_CITATION_CNT),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
+  ) %>%
+  write_csv(path="data/analysis/monthly_articles_cpp_IF.csv")
+
+```
+
+### How have citations to published and unpublished preprints evolved over time?
+
+```{r results='hide'}
+
+read_csv("data/preprints.csv") %>%
+  left_join(read_csv("data/articles.csv") %>% filter(TYPE=="Deposited"), 
+            by="PREPRINT_DOI") %>%
+  mutate(
+    IS_PUBLISHED = case_when(
+      is.na(ARTICLE_DOI) ~ "Unpublished",
+      !is.na(ARTICLE_DOI) ~ "Published"
+    )
+  ) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, IS_PUBLISHED) %>%
+  left_join(select(read_csv("data/preprint_citing_articles.csv"), 
+                    PREPRINT_DOI, 
+                    CITING_ARTICLE_CREATED_DATE), 
+             by="PREPRINT_DOI") %>%
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                                 "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   PREPRINT_POSTED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   MAX_CITATION_INTERVAL,
+                   IS_PUBLISHED), 
+           fill=list(CITED = 0)) %>%
+  filter(CITATION_INTERVAL >= 0, 
+         CITATION_INTERVAL <= 36,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+  group_by(PREPRINT_DOI, CITATION_INTERVAL, IS_PUBLISHED) %>%
+  summarize(CITATION_CNT = sum(CITED),
+            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  group_by(IS_PUBLISHED, CITATION_INTERVAL) %>%
+  summarize(
+    N = n(),
+    CPP_MEAN = mean(LOG_CITATION_CNT),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
+  ) %>% 
+  write_csv(path="data/analysis/monthly_preprints_cpp.csv")
+
+```
+
+### How are citations to preprints distributed with respect to the journal publication time?
+
+```{r results='hide'}
+
+preprint_published_citations <- read_csv("data/preprints.csv") %>%
+  inner_join(read_csv("data/articles.csv"), by="PREPRINT_DOI") %>%
+  filter(TYPE == "Deposited") %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, ARTICLE_CREATED_DATE) %>%
+  left_join(select(read_csv("data/preprint_citing_articles.csv"), 
+                    PREPRINT_DOI, 
+                    CITING_ARTICLE_CREATED_DATE), 
+             by="PREPRINT_DOI") %>%
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    MIN_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"), 
+                                     floor_date(date(PREPRINT_POSTED_DATE), 
+                                                "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1),
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   PREPRINT_POSTED_DATE, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   MIN_CITATION_INTERVAL, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  filter(CITATION_INTERVAL >= -12, 
+         CITATION_INTERVAL <= 24,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL,
+         CITATION_INTERVAL >= MIN_CITATION_INTERVAL) %>%
+  group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
+  summarize(CITATION_CNT = sum(CITED),
+            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  group_by(CITATION_INTERVAL) %>%
+  summarize(
+    N = n(),
+    CPP_MEAN = mean(LOG_CITATION_CNT),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
+  ) %>% 
+  write_csv(path="data/analysis/monthly_published_preprints_cpp.csv")
+
+```
+
+### How do altmetrics differ between bioRxiv-deposited and control articles?
+
+```{r results='hide'}
+
+read_csv("data/articles.csv") %>% 
+  inner_join(read_csv("data/article_altmetrics.csv"), 
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control"))) %>%
+  group_by(TYPE) %>%
+  summarize(
+    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
+    TWEETS_N = length(log(ALT_TWEETS+1)),
+    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
+    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
+    FEEDS_N = length(log(ALT_FEEDS+1)),
+    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
+    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
+    MSM_N = length(log(ALT_MSM+1)),
+    MSM_MEAN = mean(log(ALT_MSM+1)),
+    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
+    POLICIES_N = length(log(ALT_POLICIES+1)),
+    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
+    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
+    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
+    MENDELEY_N = length(log(ALT_MENDELEY+1)),
+    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
+    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
+  write_csv("data/analysis/article_altmetrics_summary.csv")
+
+read_csv("data/preprint_altmetrics.csv") %>%
+  mutate(TYPE = factor("Preprint")) %>%
+  group_by(TYPE) %>%
+  summarize(
+    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
+    TWEETS_N = length(log(ALT_TWEETS+1)),
+    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
+    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
+    FEEDS_N = length(log(ALT_FEEDS+1)),
+    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
+    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
+    MSM_N = length(log(ALT_MSM+1)),
+    MSM_MEAN = mean(log(ALT_MSM+1)),
+    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
+    POLICIES_N = length(log(ALT_POLICIES+1)),
+    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
+    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
+    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
+    MENDELEY_N = length(log(ALT_MENDELEY+1)),
+    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
+    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
+  write_csv("data/analysis/preprint_altmetrics_summary.csv")
+
+```
+
+### What is the relationship between altmetrics and impact factors?
+
+```{r results='hide'}
+
+read_csv("data/articles.csv") %>% 
+  inner_join(read_csv("data/article_altmetrics.csv"), 
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y")),
+         TYPE = factor(TYPE, levels=c("Deposited", "Control"))) %>%
+  inner_join(read_csv("data/impact_factors.csv"), 
+             by=c("SOURCETITLE", "YEAR")) %>%
+  mutate(
+    IF_CLASS = case_when(
+      IF >= 8 ~ 'High IF',
+      IF < 8 & IF >= 4  ~ 'Medium IF',
+      IF < 4 ~ 'Low IF'
+    ),
+    IF_CLASS = factor(IF_CLASS, levels=c("High IF", "Medium IF", "Low IF"))
+  ) %>%
+  group_by(IF_CLASS, TYPE) %>%
+  summarize(
+    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
+    TWEETS_N = length(log(ALT_TWEETS+1)),
+    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
+    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
+    FEEDS_N = length(log(ALT_FEEDS+1)),
+    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
+    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
+    MSM_N = length(log(ALT_MSM+1)),
+    MSM_MEAN = mean(log(ALT_MSM+1)),
+    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
+    POLICIES_N = length(log(ALT_POLICIES+1)),
+    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
+    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
+    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
+    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
+    MENDELEY_N = length(log(ALT_MENDELEY+1)),
+    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
+    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
+  write_csv("data/analysis/article_altmetrics_IF_summary.csv")
+
+
+```
+
+
+
+

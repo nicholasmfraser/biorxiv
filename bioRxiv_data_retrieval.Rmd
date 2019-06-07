@@ -1,5 +1,5 @@
 ---
-title: "Examining the citation and altmetric advantage of bioRxiv preprints"
+title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv data retrieval"
 output: html_notebook
 ---
 
@@ -9,45 +9,76 @@ output: html_notebook
 
 ```{r results='hide'}
 
-# Call libraries
 library(tidyverse)
+library(lubridate)
 library(stringdist)
 library(rcrossref)
-
-# Check if we use these?
-library(jsonlite)
-library(httr)
-
-# Initial config of libraries
-httr::set_config(config(ssl_version=5, ssl_verifypeer=0L, ssl_verifyhost=0L))
+library(RSelenium)
+library(rvest)
+library(roadoi)
+library(RODBC)
+library(fuzzyjoin)
+library(countrycode)
 
 ```
 
-
-### Set global variables
+### Credentials
 
 ```{r results='hide'}
 
-# Credentials for APIs - these should be set in .Renviron file
+# These should be set in .Renviron file
+email <- Sys.getenv("EMAIL")
 altmetric_api_key <- Sys.getenv("ALTMETRIC_API_KEY")
+gender_api_key <- Sys.getenv("GENDER_API_KEY")
+kb_username <- Sys.getenv("KB_USERNAME")
+kb_password <- Sys.getenv("KB_PASSWORD")
+
+```
+
+### Global variables and helper functions
+
+```{r results='hide'}
+
+# For cleaning strings for improved matching efficiency (e.g. titles)
+cleanString <- function(string) {
+  string <- gsub("<.*?>", "", string) # remove tags
+  string <- gsub("[\r\n]", "", string) # remove line breaks
+  string <- str_replace_all(string,"[^[:graph:]]", " ") # remove non UTF-8 encoded characters
+  string <- str_trim(string) # remove whitespace
+  string <- tolower(string) # set lower case
+  return(as.character(string)) # return as character vector
+}
+
+# For retrieving dates from date-parts returned by Crossref API
+parseDate <- function(parts) {
+  as.character(as_date(ymd(paste0(parts[1], "-", parts[2], "-", parts[3]))))
+}
+
+# For parsing and subsampling abstracts (e.g. first 100 characters)
+parseAbstract <- function(abstract, length = 100) {
+  substr <- substr(cleanString(abstract), 1, length)
+}
+
+```
+
+# Preprint Data ----------------------------------------------------------------
+
+```{r}
 
 # Generate start and end dates of months for period of data extraction
 startdates <- seq(ymd("2013-11-1"), ymd("2017-12-01"), by = "months")
-enddates <- startdates %m+% months(1) - 1
+enddates <- startdates %m+% months(1)
 months <- length(startdates)
-
-```
-
-# Basic Data -------------------------------------------------------------------
-
-### Count number of bioRxiv preprints deposited
-
-```{r results='hide'}
-
 startdate <- startdates[1]
 enddate <- enddates[length(enddates)]
 
-# Retrieve total number of preprints
+```
+
+### bioRxiv preprint depositions according to Crossref
+
+```{r results='hide'}
+
+# Total number of bioRxiv preprints in Crossref
 count_all_preprints <- cr_types(types="posted-content", works=TRUE, 
                                 facet="publisher-name:*", 
                                 filter=c(member = 246, 
@@ -55,7 +86,7 @@ count_all_preprints <- cr_types(types="posted-content", works=TRUE,
                                 until_posted_date = as.character(enddate)),
                                 limit=0)$facets$`publisher-name`$V1
 
-# Retrieve number of preprints with a link to a published paper
+# Number of preprints with a link to a published paper in Crossref
 count_published_preprints <- cr_types(types="posted-content", works=TRUE, 
                                       facet="publisher-name:*", 
                                       filter=c(member = 246, 
@@ -66,51 +97,9 @@ count_published_preprints <- cr_types(types="posted-content", works=TRUE,
 
 ```
 
-### Distribution of bioRxiv preprint deposits over time
+# Article Metadata Extraction --------------------------------------------------
 
-```{r results='hide'}
-
-# Retrieve all preprints between two dates
-all_preprints <- function(startdate, enddate) {
-  count <- cr_types(types="posted-content", works=TRUE, 
-                    facet="publisher-name:*", filter=c(member = 246, 
-                    from_posted_date = as.character(startdate), 
-                    until_posted_date = as.character(enddate)), 
-                    limit=0)$facets$`publisher-name`$V1
-  return(count)
-}
-
-# Retrieve all preprints with a link to a published paper between two dates
-published_preprints <- function(startdate, enddate) {
-  count <- cr_types(types="posted-content", works=TRUE, 
-                    facet="publisher-name:*", filter=c(member = 246, 
-                    relation.type = "is-preprint-of", 
-                    from_posted_date = as.character(startdate), 
-                    until_posted_date = as.character(enddate)), 
-                    limit=0)$facets$`publisher-name`$V1
-  return(count)
-}
-
-# Generate distributions of preprints
-preprint_distributions_cr <- tibble(
-  "date" = format(as.Date(startdates), "%Y-%m"),
-  "preprints" = unlist(map2(startdates, enddates, all_preprints)),
-  "matching_preprints" = unlist(map2(startdates, enddates, published_preprints))
-)
-
-# Write results to csv
-write.csv(preprint_distributions_cr, 
-          file="data/preprint_distributions_cr.csv", 
-          row.names=FALSE)
-
-# Remove redundant variables
-rm(all_preprints, published_preprints, preprint_distributions_cr)
-
-```
-
-# Crossref Metadata Extraction -------------------------------------------------
-
-### Basic metadata for all bioRxiv preprints
+### Crossref metadata for all bioRxiv preprints
 
 ```{r results='hide'}
 
@@ -120,28 +109,40 @@ data <- cr_types(types="posted-content", works=TRUE,
                  from_posted_date = as.character(startdate), 
                  until_posted_date = as.character(enddate)), 
                  limit=1000, cursor="*", cursor_max = count_all_preprints, 
-                 select=c("DOI", "title", "issued", "author"))$data
+                 select=c("DOI", "title", "issued", "author", "abstract"))$data
 
 # Build data frame
-# We only want to keep the family name of the first author
-preprints_cr <- tibble(
-  "cr_preprint_doi" = as.character(data$doi),
-  "cr_preprint_title" = as.character(data$title),
-  "cr_preprint_posted" = as.character(data$issued),
-  "cr_preprint_author" = as.character(map(data$author, function(x) x$family[1]))
+preprints <- tibble(
+  "PREPRINT_DOI" = cleanString(data$doi),
+  "PREPRINT_TITLE" = cleanString(data$title),
+  "PREPRINT_POSTED_DATE" = as_date(data$issued),
+  "PREPRINT_POSTED_YEAR" = year(as_date(data$issued)),
+  # We only want to keep the family name and first initial of the first author
+  "PREPRINT_FIRST_AUTHOR" = map_chr(data$author, 
+                                    function(x) cleanString(paste0(x$family[1],                                                                      str_sub(x$given[1],1,1)))),
+  "PREPRINT_AUTHOR_COUNT" = map_int(data$author, 
+                                    function(x) length(x$family)),
+  "PREPRINT_ABSTRACT_SHORT" = map_chr(data$abstract, parseAbstract)
 )
 
 # Write results to csv
-write.csv(preprints_cr, 
-          file="data/preprints_cr.csv", 
-          row.names=FALSE)
+write.csv(preprints %>% select(PREPRINT_DOI, PREPRINT_TITLE, PREPRINT_POSTED_DATE), 
+          file="data/preprints.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
 
 # Remove redundant variables
 rm(data)
 
 ```
 
-### DOI links between preprints and published papers via Crossref
+### We match preprints to published papers via 3 sets of links:
+
+### 1. Using the Crossref 'relationship' property
+### 2. Direct web scraping of bioRxiv website
+### 3. Fuzzy matching of titles and abstracts of bioRxiv preprints and Scopus
+
+### 1. DOI links between preprints and published papers via Crossref
 
 ```{r results='hide'}
 
@@ -151,416 +152,820 @@ data <- cr_types_(types="posted-content", works=TRUE,
                   from_posted_date = as.character(startdate), 
                   until_posted_date = as.character(enddate)), 
                   cursor="*", limit=1000, cursor_max=count_published_preprints, 
-                  parse=TRUE, select=c("DOI", "relation", "issued"))
+                  parse=TRUE, select=c("DOI", "relation", "issued", "publisher"))
 
 # Extract individual items
-items <- unlist(sapply(data, function(x) x$message$items), recursive=FALSE)
+items <- unlist(lapply(data, function(x) x$message$items), recursive=FALSE)
 
 # Build data frame
 preprints_published_articles_cr <- tibble(
-  "cr_preprint_doi" = sapply(items, function(x) x$DOI),
-  "cr_preprint_posted" = sapply(items, 
-                                function(x) paste0(x$issued$`date-parts`[[1]][1], 
-                                "-", x$issued$`date-parts`[[1]][2], 
-                                "-", x$issued$`date-parts`[[1]][3])),
-  "cr_published_doi" = sapply(items, function(x) x$relation$`is-preprint-of`[[1]]$id)
-)
-
-# Clean data. For duplicates, we keep only the earliest dated version
-preprints_published_articles_cr <- preprints_published_articles_cr %>%
-  arrange(cr_published_doi, cr_preprint_posted) %>%
-  group_by(cr_published_doi) %>%
-  slice(1) %>%
-  ungroup()
-
-# We want to match our preprints data with titles of published articles
-data <- cr_works_(dois=published_dois, .progress="text", parse=TRUE)
-
-# Create data frame of published articles. Remove duplicates and NULL values
-published_articles <- tibble(
-  "cr_published_doi" = tolower(as.character(map(data, function(x) x$message$DOI))),
-  "cr_published_title" = tolower(as.character(map(data, function(x) x$message$title[[1]])))
-) %>% distinct() %>% filter(cr_published_title != "NULL")
-
-# Set lowercase doi for matching
-preprints_published_articles_cr <- preprints_published_articles_cr %>%
-  mutate(cr_published_doi = tolower(cr_published_doi))
-
-# Join relationship and title data
-preprints_published_articles_cr <- inner_join(preprints_published_articles_cr, 
-                                              published_articles, 
-                                              by=c("cr_published_doi"))
+  "PREPRINT_DOI" = map_chr(items, function(x) cleanString(x$DOI)),
+  "ARTICLE_DOI" = map_chr(items, function(x) 
+                          cleanString(x$relation$`is-preprint-of`[[1]]$id)))
 
 # Write results to csv
 write.csv(preprints_published_articles_cr, 
           file="data/preprints_published_articles_cr.csv", 
-          row.names=FALSE)
-
-rm(data, items, published_articles)
-
-```
-
-# Fuzzy WoS Matching of Preprints ----------------------------------------------
-
-### Clean and Prepare data for matching
-
-```{r results='hide'}
-
-# Select columns, remove whitespace and line breaks
-cr_published_wos_matching <- preprints_published_articles_cr %>%
-  select(cr_preprint_doi, cr_published_doi, cr_published_title) %>%
-  mutate(cr_published_doi = gsub("[\r\n]", "", cr_published_doi), 
-         cr_published_title = gsub("[\r\n]", "", cr_published_title)) %>% 
-  mutate(cr_published_doi = str_trim(cr_published_doi), cr_published_title = str_trim(cr_published_title)) 
-
-# Write results to csv
-write.csv(cr_published_wos_matching, 
-          file="data/KB/input/cr_published_wos_matching.csv", 
-          row.names=FALSE)
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
 
 # Remove redundant variables
-rm(cr_published_wos_matching)
+rm(data, items)
 
 ```
 
-### Crossref data is matched to WoS records in KB database on DOIs and titles
-
-Input: data/KB/input/cr_published_wos_matching.csv -> BIORXIV_CR_PUBLISHED
-SQL:cr_published_wos_matching.sql
-Output: data/KB/output/cr_published_wos_matched.csv
-
-### Clean resulting data
+### 2. DOI links between preprints and published papers via bioRxiv website
 
 ```{r}
 
-# Load data and keep only non-duplicated items
-cr_published_wos_matched <- read_csv(file="data/KB/output/cr_published_wos_matched.csv") %>%
-  group_by(CR_PUBLISHED_DOI) %>% 
-  filter(n() == 1) %>%
-  ungroup()
+# Initialise RSelenium client
+rD <- rsDriver(verbose = FALSE, port=4444L, browser="firefox")
+remDr <- rD$client
+remDr$open(silent = TRUE)
 
-```
-
-### Relationships between published articles and preprints in Crossref are incomplete. 
-### Preprints that do not have a relationship in Crossref are matched to 
-### WoS articles via fuzzy matching of titles and first names
-
-### Clean and prepare preprint data to be matched
-
-```{r results='hide'}
-
-preprints_cr <- read_csv(file="data/preprints_cr.csv")
-
-# Subset preprints without a matching paper in Crossref for WoS matching
-cr_preprints_wos_matching <- preprints_cr %>%
-  filter(!cr_preprint_doi %in% cr_published_wos_matched$CR_PREPRINT_DOI) %>%
-  mutate(cr_preprint_posted_year = year(as.Date(cr_preprint_posted))) %>%
-  mutate(cr_preprint_title = tolower(cr_preprint_title)) %>% 
-  mutate(cr_preprint_author = tolower(cr_preprint_author)) %>%
-  mutate(cr_preprint_doi = gsub("[\r\n]", "", cr_preprint_doi), 
-         cr_preprint_title = gsub("[\r\n]", "", cr_preprint_title), 
-         cr_preprint_author = gsub("[\r\n]", "", cr_preprint_author)) %>% 
-  mutate(cr_preprint_doi = str_trim(cr_preprint_doi), 
-         cr_preprint_title = str_trim(cr_preprint_title), 
-         cr_preprint_author = str_trim(cr_preprint_author)) %>% 
- select(cr_preprint_doi, cr_preprint_title, cr_preprint_author, cr_preprint_posted_year)
+# Function for retrieving data from bioRxiv webpages
+retrieveData <- function(preprint_doi) {
   
-# Write results to csv
-write.csv(cr_preprints_wos_matching, file="data/KB/input/cr_preprints_wos_matching.csv", row.names=FALSE)
+  # Query url - we use the doi which redirects to bioRxiv
+  url <- paste0("https://doi.org/", preprint_doi)
+  
+  result <- tryCatch({
+      
+    # Navigate to url
+    remDr$navigate(url)
+    
+    #Read page html
+    html <- read_html(remDr$getPageSource()[[1]])
+      
+    # Parse relevant html node
+    doi <- html %>%
+      html_node("div.pub_jnl > a") %>%
+      html_text()
+      
+    # Return data as tibble
+    published_articles_bio <- tibble(
+      "PREPRINT_DOI" = preprint_doi,
+      "ARTICLE_DOI_BIO" = cleanString(doi)
+    )
+    published_articles_bio
+  },
+  error = function(e) {
+    # If call results in error, set data to NA
+    published_articles_bio <- tibble(
+      "PREPRINT_DOI" = preprint_doi,
+      "ARTICLE_DOI" = NA
+    )
+    published_articles_bio
+  })
+  # Return result
+  result
+}
 
-rm(cr_preprints_wos_matching)
+# Map results to dataframe, keep only valid DOIs
+preprints_published_articles_bio <- map_dfr(preprints$preprint_doi,
+                                            retrieveData) %>% 
+  filter(substr(article_doi_bio, 1, 3) == "10.")
+
+# Write results to csv
+write.csv(preprints_published_articles_bio, 
+          file="data/preprints_published_articles_bio.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Close Selenium client
+remDr$close()
+
+rm(retrieveData, rD, remDr)
+
 ```
 
-### We retrieve all articles with the same author last name, 
-### published after the date of preprint deposition
-
-Input:data/KB/input/cr_preprints_wos_matching.csv -> BIORXIV_CR_PREPRINTS
-SQL: cr_preprints_wos_matching.sql
-Output: data/KB/output/cr_preprints_wos_matched.csv
-
-### Fuzzy matching of returned WoS articles to unmatched preprints
+### 3. Matching of preprints to Scopus records via fuzzy title and abstract matching
 
 ```{r results='hide'}
 
-# Read data of WoS articles. CAUTION: Large file
-wos_articles <- read_csv(file="data/KB/output/cr_preprints_wos_matched.csv", 
-                         col_names=TRUE)
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
-# Prepare data for matching - set columns to lowercase and remove duplicates
-wos_articles <- wos_articles %>%
-  mutate(LASTNAME = tolower(LASTNAME)) %>%
-  mutate(ARTICLE_TITLE = tolower(ARTICLE_TITLE)) %>%
-  filter(!PK_ITEMS %in% cr_published_wos_matched$PK_ITEMS) 
+# Save the preprints to an SQL table
+sqlSave(con, preprints, "BIORXIV_PREPRINTS",
+        rownames=FALSE,
+        varTypes=c(PREPRINT_DOI= "varchar(32)",
+                   PREPRINT_TITLE= "varchar(1024)",
+                   PREPRINT_POSTED_DATE = "date",
+                   PREPRINT_POSTED_YEAR = "number(4,0)",
+                   PREPRINT_FIRST_AUTHOR = "varchar(128)",
+                   PREPRINT_AUTHOR_COUNT = "number(4,0)",
+                   PREPRINT_ABSTRACT_SHORT = "varchar(128)"))
+
+# Create a table of potentially matching items
+sqlQuery(con, read_file("sql/preprints_scopus_fuzzy_matching.sql"))
+
+# Read titles and abstracts of scopus items for matching
+scp_items <- as_tibble(sqlQuery(con, read_file("sql/preprints_scopus_titles_abstracts.sql"))) %>%
+                 distinct(PK_ITEMS, .keep_all=T) %>%
+                 mutate(DOI = cleanString(DOI),
+                        AUTHORNAME = cleanString(AUTHORNAME),
+                        ARTICLE_TITLE = cleanString(ARTICLE_TITLE),
+                        ABSTRACT_SHORT = cleanString(ABSTRACT_SHORT))
+
+# Close DB connection
+odbcClose(con)
 
 # Fuzzy matching function. Returns best article match and the matching accuracy
-getMatch <- function(item) {
+getMatch <- function(p_author, p_year, p_count, p_title, p_abstract) {
   
-  # Filter WoS articles for author and year
-  w <- wos_articles %>%
-    filter(LASTNAME == item["cr_preprint_author"]) %>%
-    filter(PUBYEAR >= item["cr_preprint_posted_year"])
+  # Filter Scopus articles for author, year and author count
+  items <- scp_items %>%
+    filter(AUTHORNAME == p_author,
+           PUBYEAR >= p_year,
+           AUTHOR_CNT == p_count)
   
-  if(!length(w$LASTNAME)){
+  if(!length(items$AUTHORNAME)){
     return(NA)
   } else {
-    # Fuzzy match (method "jw" = Jaro-Winkler distance)
-    # Can experiment with similarity percentage (inverse of maxDist). 
-    # 80% (maxDist=0.2) seems to be good. 
-    # Below 70% results in too many false positives
-    index <- amatch(item["cr_preprint_title"], 
-                    w$ARTICLE_TITLE, 
+    # Fuzzy matching, method "jw" = Jaro-Winkler distance
+    # maxDist of 0.2 represents 80 % similarity
+    # Try match on title
+    index <- amatch(p_title, 
+                    items$ARTICLE_TITLE, 
                     method="jw", 
                     nomatch = NA_integer_, 
                     maxDist = 0.2)
+    # If no match on title, try on abstract
+    if(is.na(index)) {
+      index <- amatch(p_abstract, 
+                    items$ABSTRACT_SHORT, 
+                    method="jw", 
+                    nomatch = NA_integer_, 
+                    maxDist = 0.2)
+    } 
+    # If no match on title or abstract, return NA
     if(is.na(index)) {
       return(NA)
-    } else {
-      match <- w[index,]
-      match["cr_preprint_doi"] <- item["cr_preprint_doi"]
-      match["cr_preprint_title"] <- item["cr_preprint_title"]
-      match["match_accuracy"] <- stringdist(item["cr_preprint_title"], 
-                                            match$ARTICLE_TITLE, 
-                                            method="jw")
+    }
+    # Otherwise generate match details
+    else {
+      match <- as_tibble(items[index,]) %>%
+        pull(DOI)
       return(match)
     }
   }
 }
 
-# Match preprint titles to articles in Web of Science
-matches <- apply(cr_preprints_wos_matching, 1, getMatch)
-matches <- matches[lapply(matches, length) > 1]
+# Match preprint titles to articles in Scopus
+preprints_published_articles_scp <- preprints %>%
+  rowwise() %>%
+  mutate(ARTICLE_DOI = pmap_chr(list(PREPRINT_FIRST_AUTHOR,
+                         PREPRINT_POSTED_YEAR,
+                         PREPRINT_AUTHOR_COUNT,
+                         PREPRINT_TITLE,
+                         PREPRINT_ABSTRACT_SHORT),
+                    getMatch)) %>%
+  ungroup() %>%
+  select(PREPRINT_DOI, ARTICLE_DOI) %>%
+  filter(ARTICLE_DOI != "NA")
 
-# Clean data and remove any duplicates
-cr_preprints_wos_matched <- map_dfr(matches, function(x) x) %>% 
-  select(-c("LASTNAME")) %>%
-  group_by(PK_ITEMS) %>% 
-  filter(n() == 1) %>% # remove duplicates
-  ungroup()
 
-rm(wos_articles, getMatch, matches)
+# Write to csv
+write.csv(preprints_published_articles_scp, 
+          "data/preprints_published_articles_scp.csv",
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Remove redundant variables
+rm(con, scp_items, getMatch)
 
 ```
 
-### Merge two datasets (crossref-matched and fuzzy-matched) together
+### Merge preprint-published article links
 
 ```{r results='hide'}
 
-cr_preprints_wos_matched <- cr_preprints_wos_matched %>% 
-  select(-c("cr_preprint_title")) %>%
-  rename(CR_PREPRINT_DOI = cr_preprint_doi)
+# Prepare data for merging - add source field
+preprints_published_articles_bio <- preprints_published_articles_bio %>%
+  mutate(SOURCE = "bioRxiv")
+preprints_published_articles_cr <- preprints_published_articles_cr %>%
+  mutate(SOURCE = "Crossref")
+preprints_published_articles_scp <- preprints_published_articles_scp %>%
+  mutate(SOURCE = "Scopus")
 
-cr_published_wos_matched <- cr_published_wos_matched %>% 
-  select(-c("CR_PUBLISHED_DOI", "CR_PUBLISHED_TITLE"))
+# Merge all preprint-published article links.
+# For rows with the same published doi but different preprint doi we select the
+# earliest posted preprint. This likely occurs when authors upload multiple
+# preprints as separate versions.
+# For rows with the same preprint doi but different published dois we designate
+# a priority list (biorxiv > crossref > scopus) and select the top result.
+preprints_published_articles <- bind_rows(preprints_published_articles_bio,
+                                          preprints_published_articles_cr,
+                                          preprints_published_articles_scp) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, .keep_all=T) %>%
+  inner_join(select(preprints, PREPRINT_DOI, PREPRINT_POSTED_DATE)) %>%
+  group_by(ARTICLE_DOI) %>%
+  arrange(PREPRINT_POSTED_DATE, SOURCE) %>%
+  slice(1) %>%
+  ungroup() %>%
+  group_by(PREPRINT_DOI) %>%
+  arrange(SOURCE) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-SOURCE, -PREPRINT_POSTED_DATE)
 
-published_articles <- bind_rows(cr_published_wos_matched, cr_preprints_wos_matched)
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
-write.csv(published_articles, file="data/published_articles.csv", row.names=FALSE)
+# Save preprints_published_articles to a new SQL table
+sqlSave(con, preprints_published_articles, "BIORXIV_PRE_PUB", rownames=FALSE,
+        varTypes=c(PREPRINT_DOI="varchar(512)", ARTICLE_DOI="varchar(512)"))
 
-rm(cr_published_wos_matched, cr_preprints_wos_matched)
+# Close DB connection
+odbcClose(con)
+
+# Write to csv
+write.csv(preprints_published_articles, 
+          "data/preprints_published_articles.csv",
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Remove redundant variables
+rm(preprints_published_articles_bio, preprints_published_articles_cr,
+   preprints_published_articles_scp, con, query)
+
+```
+
+### For citation and altmetrics analysis: match published articles to Scopus records
+
+```{r results='hide'}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# Create table of matched articles
+sqlQuery(con, read_file("sql/preprints_published_articles.sql"))
+
+# For a small number of articles there are two entries (items) in Scopus per DOI.
+# We want to remove these - usually one item is the 'false' item and is never linked 
+# to in citations. Thus, we find the duplicate items and remove the one that has
+# the lowest (or usually zero) citations.
+sqlQuery(con, read_file("sql/remove_duplicate_published_articles.sql"))
+
+# Close DB connection
+odbcClose(con)
+
+# Remove redundant variables
+rm(con)
 
 ```
 
 # Generating a Control Dataset -------------------------------------------------
 
-### Retrieve category information for articles in published dataset
-
-Input: data/published_articles.csv -> TABLE BIORXIV_PUBLISHED_FINAL
-SQL Query: sql/published_article_categories.sql
-Output: data/KB/output/published_article_categories.csv
-
-### Split categories into single and multidisciplinary groups:
-
-```{r results='hide'}
-
-# Read data
-categories <- read_csv("data/KB/output/published_article_categories.csv")
-
-# Split into single disciplinary and multidisciplinary categories
-single_cat <- categories %>%
-  filter(PK_CLASSIFICATIONS != 111)
-
-multi_cat <- categories %>%
-  filter(PK_CLASSIFICATIONS == 111) %>%
-  filter(!PK_ITEMS %in% single_cat$PK_ITEMS)
-
-write.csv(single_cat, 
-          file="data/KB/input/published_single_category.csv", 
-          row.names=FALSE)
-write.csv(multi_cat, 
-          file="data/KB/input/published_multi_category.csv", 
-          row.names=FALSE)
-
-rm(categories)
-
-```
-
-### Handle single disciplinary articles
-
-### First retrieve all articles from the same journal-issues from WoS
-
-Input: data/KB/input/published_single_category.csv -> TABLE BIORXIV_SINGLE_CAT
-SQL Query: published_control_single_category.sql
-Output: data/KB/output/control_single_category.csv
-
-### Select a single random article as the matching article
-
-```{r results='hide'}
-
-control_data <- read_csv("data/KB/output/control_single_category.csv") %>%
-  filter(!PK_ITEMS %in% single_cat$PK_ITEMS) # remove items associated with bioRxiv articles
-
-single_cat <- single_cat %>%
-  distinct(PK_ITEMS, .keep_all=T) %>%
-  left_join(control_data, by = "FK_ISSUES") %>% 
-  group_by(PK_ITEMS.x) %>%
-  sample_n(1) %>%
-  ungroup()
-
-rm(control_data)
-
-```
-
-### Handle multi disciplinary articles
-
-### First retrieve categories of articles cited by multidisciplinary published articles
-
-Input: data/KB/input/published_multi_category.csv -> TABLE BIORXIV_MULTI_CAT
-SQL Query: published_multidisciplinary_categories.sql
-Output: data/KB/output/published_multidisciplinary_categories.sql.csv
-
-### Then retrieve articles published in the same journal issues, and the categories of articles they cite
-
-Input: data/KB/input/published_multi_category.csv -> TABLE BIORXIV_MULTI_CAT
-SQL Query: published_control_multidisciplinary_categories.sql
-Output: data/KB/output/control_multidisciplinary_categories.csv
-
-### Multidisciplinary published articles are matched to a category based on the most frequently cited category amongst their references. A single, random article is then selected from the control articles in the same category and journal-issue
-
-```{r results='hide'}
-
-published_data <- read_csv("data/KB/output/published_multidisciplinary_categories.csv")
-
-control_data <- read_csv("data/KB/output/control_multidisciplinary_categories.csv")
-
-published_distinct <- published_data %>%
-  distinct(PK_ITEMS)
-
-published_categories <- published_data %>%
-  filter(CLASSIFICATION != "Multidisciplinary Sciences") %>%
-  group_by(PK_ITEMS, FK_ISSUES) %>% 
-  count(CLASSIFICATION) %>% 
-  top_n(1) %>%
-  ungroup
-
-control_distinct <- control_data %>%
-  distinct(PK_ITEMS)
-
-control_categories <- control_data %>% 
-  filter(CLASSIFICATION != "Multidisciplinary Sciences") %>%
-  filter(!PK_ITEMS %in% published_categories$PK_ITEMS) %>%
-  group_by(PK_ITEMS, FK_ISSUES) %>%
-  count(CLASSIFICATION) %>% 
-  ungroup
-
-matches <- left_join(published_categories, control_categories, by=c("FK_ISSUES", "CLASSIFICATION")) %>%
-  group_by(PK_ITEMS.x) %>%
-  arrange(desc(n.y)) %>%
-  top_n(1) %>%
-  sample_n(1) %>%
-  rename(PK_ITEMS_PUBLISHED = PK_ITEMS.x, PK_ITEMS_CONTROL = PK_ITEMS.y) %>%
-  select(PK_ITEMS_PUBLISHED, PK_ITEMS_CONTROL)
-
-# Write data to csv
-write.csv(matches, file="data/KB/input/control_multidisciplinary_matches.csv", row.names=FALSE)
-
-rm(matches, published_data, control_data, published_distinct, control_distinct, control_categories, published_categories)
-
-```
-
-### Extract full WoS records for the set of matched control articles
-
-Input: data/KB/input/control_multidisciplinary_matches.csv -> BIORXIV_MULTI_MATCHES
-SQL: published_control_multidisciplinary_matches.sql
-Output: data/KB/out/control_multidisciplinary_articles.csv
-
-
-### Clean and merge single and multidisciplinary datasets
-
-```{r results='hide'}
-
-multi_cat_articles <- read_csv("data/KB/output/control_multidisciplinary_articles.csv")
-
-# Prepare data for matching
-single_cat <- single_cat %>%
-  select(-c(FK_SOURCES.x, PK_CLASSIFICATIONS, CLASSIFICATION)) %>%
-  rename(PK_ITEMS_PUBLISHED = PK_ITEMS.x, PK_ITEMS = PK_ITEMS.y, FK_SOURCES= FK_SOURCES.y) %>%
-  mutate(SOURCE_CATEGORY = "Single discipline")
-
-multi_cat_articles <- multi_cat_articles %>%
-  mutate(SOURCE_CATEGORY = "Mutidisciplinary")
-
-control_articles <- bind_rows(multi_cat_articles, single_cat)
-
-write.csv(control_articles, file="data/control_articles.csv", row.names=FALSE)
-
-rm(single_cat, multi_cat_articles)
-```
-
-### Final datasets
-
-```{r results='hide'}
-
-published_articles_final <- published_articles %>%
-  mutate(TYPE = "published") %>%
-  select(-c(CR_PREPRINT_DOI)) %>%
-  filter(PK_ITEMS %in% control_articles$PK_ITEMS_PUBLISHED)
-
-control_articles_final <- control_articles %>%
-  mutate(TYPE = "control") %>%
-  select(-c(PK_ITEMS_PUBLISHED, SOURCE_CATEGORY))
-
-write.csv(published_articles_final, file="data/published_articles_final.csv", row.names=FALSE)
-write.csv(control_articles_final, file="data/control_articles_final.csv", row.names=FALSE)
-
-
-### There are NA values appearing in control articles. Why? Deleted manually for now. Need to check.
-
-
-```
-
-
-### Retrieve citing articles
-
-Published articles:
-Input: data/published_articles_final.csv -> BIORXIV_PUBLISHED_FINAL
-SQL Query: published_citing_articles.sql
-Output: data/KB/output/published_citing_articles.csv
-
-Control articles:
-Input: data/control_articles_final.csv -> BIORXIV_CONTROL_FINAL
-SQL Query: control_citing_articles.sql
-Output: data/KB/output/control_citing_articles.csv
-
-
-### Retrieve Crossref publication dates for all items
-
-```{r results='hide'}
-# Published articles
-published_data <- cr_works_(dois = published_articles_final$DOI, .progress="text", parse=T)
-
-# Control articles
-control_data <- cr_works_(dois = control_articles_final$DOI, .progress="text", parse=T)
-
-```
+### Retrieve all articles published in same journal as our published articles
+### Most of this is done in the KB database directly
 
 ```{r}
 
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
-published_citing_articles <- read_csv("data/KB/output/published_citing_articles.csv")
-control_citing_articles <- read_csv("data/KB/output/control_citing_articles.csv")
+# Create a table of all potential control articles from same journals
+sqlQuery(con, read_file("sql/all_control_articles.sql"))
 
-published_citing_data <- cr_works_(dois = published_citing_articles$DOI, .progress="text", parse=T)
-control_citing_data <- cr_works_(dois = control_citing_articles$DOI, .progress="text", parse=T)
+# Clean controls
+sqlQuery(con, read_file("sql/clean_controls.sql"))
+
+# Create table of single category articles
+sqlQuery(con, read_file("sql/single_category_articles.sql"))
+
+# Retrieve controls for single category articles
+single_category_controls <- as_tibble(sqlQuery(con, 
+                              read_file("sql/single_category_controls.sql")))
+
+# Create table of multi category articles
+sqlQuery(con, read_file("sql/multi_category_articles.sql"))
+
+# Create table of categories for published multi-category articles
+sqlQuery(con, read_file("sql/published_multi_category_cited.sql"))
+
+# Create table of categories for control multi-category articles
+sqlQuery(con, read_file("sql/control_multi_category_cited.sql"))
+
+# Retrieve controls for multi category articles
+multi_category_controls <- as_tibble(sqlQuery(con, 
+                            read_file("sql/multi_category_controls.sql")))
+
+# Close DB connection
+odbcClose(con)
+  
+# Bind all data together
+control_articles <- bind_rows(single_category_controls,
+                              multi_category_controls) %>%
+  mutate(ARTICLE_DOI = cleanString(ARTICLE_DOI))
+
+# Remove redundant variables
+rm(query, con, single_category_controls, multi_category_controls)
 
 ```
+
+### Create final analysis datasets
+
+```{r results='hide'}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# Retrieve all bioRxiv-deposited articles
+published_articles <- sqlFetch(con, "BIORXIV_PUBLISHED_ARTICLES") %>%
+  # Add a TYPE field to distinguish deposited from control articles
+  mutate(TYPE = "Deposited") %>%
+  select(-FK_ITEMS, -UT_EID, -FK_SOURCES) %>%
+  distinct(PREPRINT_DOI, .keep_all = T)
+
+# Close DB connection
+odbcClose(con)
+
+# Retrieve all control articles
+control_articles_analysis <- control_articles %>%
+  mutate(TYPE = "Control") %>%
+  select(-FK_ITEMS, -UT_EID, -FK_SOURCES) %>%
+  distinct(PREPRINT_DOI, .keep_all = T) %>%
+  # Make sure that control articles and deposited articles correspond
+  filter(PREPRINT_DOI %in% published_articles$PREPRINT_DOI)
+
+published_articles_analysis <- published_articles %>%
+  filter(PREPRINT_DOI %in% control_articles_analysis$PREPRINT_DOI)
+
+# Bind articles and clean up journal names
+articles <- bind_rows(published_articles_analysis, control_articles_analysis) %>%
+  mutate(SOURCETITLE = cleanString(SOURCETITLE))
+
+# Save analysis set to new table
+sqlSave(con, articles, "BIORXIV_ALL_ARTICLES", rownames=FALSE, 
+        varTypes=c(PREPRINT_DOI="varchar(512)", ARTICLE_DOI="varchar(512)",
+        ARTICLE_CREATED_DATE = "date", ARTICLE_TITLE = "varchar(2048)"))
+
+# Write to csv
+write.csv(articles, 
+          file="data/articles.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Remove redundant variables
+rm(con, published_articles, control_articles, published_articles_analysis, control_articles_analysis)
+```
+
+### Citing article data
+
+```{r}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# Retrieve all citing articles and their publication dates
+citing_articles <- as_tibble(sqlQuery(con,read_file("sql/citing_articles.sql"))) %>%
+  mutate(CITED_ARTICLE_DOI = cleanString(CITED_ARTICLE_DOI),
+         CITING_ARTICLE_DOI = cleanString(CITING_ARTICLE_DOI))
+
+# Close DB connection
+odbcClose(con)
+
+# Remove redundant variables
+rm(con)
+
+write.csv(citing_articles, 
+          file="data/citing_articles.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
+### Altmetric data
+
+```{r}
+
+# API request function
+request <- function(doi){
+  
+  # URL for API call
+  url <- paste("http://api.altmetric.com/v1/doi/", 
+               doi, sep="")
+
+  # Make request
+  response <- httr::GET(url)
+  
+  # Check for empty response (404)
+  if (response$status_code == 404) { 
+    return()
+  }else{
+    return(response)
+  }
+}
+
+# Function for retrieving altmetrics
+getAltmetrics <- function(doi) {
+  
+  response <- request(doi)
+  
+  # If no response, set all variables to NA
+  if(!length(response)){
+    
+    altmetrics_data <- tibble(
+      "ARTICLE_DOI" = doi,
+      "HAS_ALTMETRIC" = F,
+      "ALT_SCORE" = NA,
+      "ALT_TWEETS" = NA, 
+      "ALT_FEEDS" = NA,
+      "ALT_MSM" = NA,
+      "ALT_POLICIES" = NA,
+      "ALT_WIKIPEDIA" = NA,
+      "ALT_MENDELEY" = NA
+    )
+    
+  } else {
+
+    # Retrieve data
+    data <- httr::content(response, as="parsed")
+    
+    # Build tibble of results
+    # Where no data exists on a field, we set it to NA
+    altmetrics_data <- tibble(
+      "ARTICLE_DOI" = doi,
+      "HAS_ALTMETRIC" = T,
+      "ALT_SCORE" = if (length(data$score)) data$score else NA,
+      "ALT_TWEETS" = if (length(data$cited_by_tweeters_count)) data$cited_by_tweeters_count else NA, 
+      "ALT_FEEDS" = if (length(data$cited_by_feeds_count)) data$cited_by_feeds_count else NA,
+      "ALT_MSM" = if (length(data$cited_by_msm_count)) data$cited_by_msm_count else NA,
+      "ALT_POLICIES" = if (length(data$cited_by_policies_count)) data$cited_by_policies_count else NA,
+      "ALT_WIKIPEDIA" = if (length(data$cited_by_wikipedia_count)) data$cited_by_wikipedia_count else NA,
+      "ALT_MENDELEY" = if (length(data$readers$mendeley)) as.numeric(data$readers$mendeley) else NA
+    )
+  
+  }
+  
+  return(altmetrics_data)
+}
+
+# Retrieve altmetric data for all published articles
+article_altmetrics <- map_dfr(articles$ARTICLE_DOI,
+                              function(x) getAltmetrics(x)) %>%
+  distinct(ARTICLE_DOI, .keep_all=T) %>% 
+  left_join(select(articles, PREPRINT_DOI, ARTICLE_DOI), 
+            by=c("ARTICLE_DOI")) %>%
+  replace(., is.na(.), 0) %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, HAS_ALTMETRIC, ALT_SCORE, ALT_TWEETS, 
+         ALT_FEEDS, ALT_MSM, ALT_POLICIES, ALT_WIKIPEDIA, ALT_MENDELEY)
+
+# Retrieve altmetric data for preprints
+preprint_altmetrics <- map_dfr(preprints$PREPRINT_DOI, 
+                               function(x) getAltmetrics(x)) %>%
+  rename(PREPRINT_DOI = ARTICLE_DOI) %>%
+  replace(., is.na(.), 0)
+
+# Write to csv
+write.csv(article_altmetrics,
+          file="data/article_altmetrics.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+write.csv(preprint_altmetrics,
+          file="data/preprint_altmetrics.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
+### Article OA status
+
+```{r results='hide'}
+
+# Retrive the OA status of articles from Unpaywall (OAdoi)
+# We keep only the IS_OA and JOURNAL_IS_OA properties
+article_oa_status <- oadoi_fetch(dois = articles$ARTICLE_DOI, 
+                    email = email) %>%
+  left_join(select(articles, PREPRINT_DOI, ARTICLE_DOI), by=c("doi" = "ARTICLE_DOI")) %>%
+  select(PREPRINT_DOI, doi, is_oa, journal_is_oa) %>%
+  rename(ARTICLE_DOI = doi,
+         IS_OA = is_oa,
+         JOURNAL_IS_OA = journal_is_oa)
+
+# write to csv
+write.csv(article_oa_status,
+          file="data/article_oa_status.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
+### Preprint citation data
+
+```{r}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# First we retrieve all potential citations and conduct some initial cleaning steps
+data <- sqlQuery(con, read_file("sql/preprint_citing_articles.sql")) %>%
+  mutate(REFTITLE = cleanString(REFTITLE),
+         SOURCETITLE = cleanString(SOURCETITLE))
+
+# Close DB connection
+odbcClose(con)
+
+# We combine different methods to match references to preprints:
+
+# Match reference titles to preprint titles
+reftitle_matches_title <- data %>%
+  mutate_all(~gsub("biorxiv", "", .)) %>%
+  stringdist_inner_join(preprints, by=c("REFTITLE" = "PREPRINT_TITLE"), method="jw", max_dist = 0.2) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, CITING_ARTICLE_DOI, CITING_ARTICLE_CREATED_DATE)
+
+# Sometimes titles are given by mistake in the source title - match these to preprint titles
+sourcetitle_matches_title <- data %>%
+  mutate_all(~gsub("biorxiv", "", .)) %>%
+  stringdist_inner_join(preprints, by=c("SOURCETITLE" = "PREPRINT_TITLE"), method="jw", max_dist = 0.2) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, CITING_ARTICLE_DOI, CITING_ARTICLE_CREATED_DATE)
+
+# Match where an exact DOI is given (e.g. "https://doi.org/12345/6789")
+sourcetitle_matches_doi_exact <- data %>%
+  mutate_all(~gsub("biorxiv", "", .)) %>%
+  mutate(DOI = str_extract(SOURCETITLE, "([0-9]+).*$")) %>%
+  inner_join(preprints, by=c("DOI" = "PREPRINT_DOI")) %>%
+  rename(PREPRINT_DOI = DOI) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, CITING_ARTICLE_DOI, CITING_ARTICLE_CREATED_DATE)
+
+# Match where an partial DOI is given (e.g. "12345/6789")
+sourcetitle_matches_doi_partial <- data %>%
+  mutate_all(~gsub("biorxiv", "", .)) %>%
+  mutate(NUMBER = str_extract(SOURCETITLE, "([0-9]+).*$")) %>%
+  mutate(DOI = paste0("10.1101/", NUMBER)) %>%
+  inner_join(preprints, by=c("DOI" = "PREPRINT_DOI")) %>%
+  rename(PREPRINT_DOI = DOI) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, CITING_ARTICLE_DOI, CITING_ARTICLE_CREATED_DATE)
+
+# Bind all matches together
+preprint_citing_articles <- bind_rows(reftitle_matches_title,
+                         sourcetitle_matches_title,
+                         sourcetitle_matches_doi_exact,
+                         sourcetitle_matches_doi_partial) %>% distinct()
+
+# Write to csv
+write.csv(preprint_citing_articles,
+          file="data/preprint_citing_articles.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Remove redundant variables
+rm(reftitle_matches_title, sourcetitle_matches_title, sourcetitle_matches_doi_exact, sourcetitle_matches_doi_partial)
+```
+
+### Impact Factors
+
+Impact factors are calculated directly from Scopus data
+
+```{r}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+impact_factors <- as_tibble(sqlQuery(con, read_file("sql/impact_factors.sql")))
+
+# Close DB connection
+odbcClose(con)
+
+# Write to csv
+write.csv(impact_factors,
+          file="data/impact_factors.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+# Remove redundant variables
+rm(con)
+
+```
+
+### Authorship data
+
+### Author countries
+
+```{r}
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# Retrieve countries associated with first authors 
+# Note: an author can have more than one country
+first_author_countries <- as_tibble(sqlQuery(con, read_file("sql/first_author_countries.sql")))
+last_author_countries <- as_tibble(sqlQuery(con, read_file("sql/last_author_countries.sql")))
+
+first_author_countries <- articles %>% 
+  left_join(first_author_countries, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE)
+last_author_countries <- articles %>% 
+  left_join(last_author_countries, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE)
+
+# Close DB connection
+odbcClose(con)
+
+# Remove redundant variables
+rm(query, con)
+
+write.csv(first_author_countries,
+          file="data/first_author_countries.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+write.csv(last_author_countries,
+          file="data/last_author_countries.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+```
+
+### Author Academic Age and Productivity
+
+```{r}
+
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# First create a temporary table of all Author IDs for first and last authors
+#sqlQuery(con, read_file("sql/first_authors_ids.sql"))
+#sqlQuery(con, read_file("sql/last_authors_ids.sql"))
+
+first_author_age <- as_tibble(sqlQuery(con, read_file("sql/first_author_age.sql")))
+last_author_age <- as_tibble(sqlQuery(con, read_file("sql/last_author_age.sql")))
+
+first_author_age <- articles %>% 
+  left_join(first_author_age, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, AUTHOR_AGE) %>% 
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>% 
+  arrange(desc(AUTHOR_AGE)) %>% 
+  top_n(1) %>% 
+  ungroup()
+last_author_age <- articles %>% 
+  left_join(last_author_age, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, AUTHOR_AGE) %>% 
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>% 
+  arrange(desc(AUTHOR_AGE)) %>% 
+  top_n(1) %>% 
+  ungroup()
+
+
+# Close DB connection
+odbcClose(con)
+
+# Remove redundant variables
+rm(con)
+
+write.csv(first_author_age,
+          file="data/first_author_age.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+write.csv(last_author_age,
+          file="data/last_author_age.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
+### Author Gender
+
+```{r}
+# Open DB connection
+con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
+
+# Retireve first author names from Scopus
+first_author_names <- as_tibble(sqlQuery(con, read_file("sql/first_author_names.sql")))
+last_author_names <- as_tibble(sqlQuery(con, read_file("sql/last_author_names.sql")))
+
+# Close DB connection
+odbcClose(con)
+
+# Merge names and countries to produce a list of distinct names/countries
+first_author_names_countries <- first_author_names %>%
+  inner_join(first_author_countries, by="ARTICLE_DOI") %>%
+  select(FIRSTNAME, COUNTRYCODE) %>%
+  distinct(FIRSTNAME, COUNTRYCODE)
+
+last_author_names_countries <- last_author_names %>%
+  inner_join(last_author_countries, by="ARTICLE_DOI") %>%
+  select(FIRSTNAME, COUNTRYCODE) %>%
+  distinct(FIRSTNAME, COUNTRYCODE)
+
+getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
+  
+  if(!is.na(COUNTRYCODE)){
+    # Convert countrycode to ISO3
+    COUNTRY = countrycode(COUNTRYCODE, "iso3c", "iso2c")
+    url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, "&country=", 
+                COUNTRY, "&key=", gender_api_key)
+  }
+  else {
+     url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, 
+                   "&key=", gender_api_key)
+  }
+  
+  # Make request
+  response <- httr::GET(url)
+  gender <- httr::content(response)$gender 
+  
+  # If gender unknown, try without country arguments
+  if(isTRUE(gender == "unknown")) {
+    url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, 
+                   "&key=", gender_api_key)
+    response <- httr::GET(url)
+    gender <- httr::content(response)$gender 
+  }
+  
+  # Check for empty response (404)
+  if (response$status_code == 404) { 
+    return()
+  }else{
+    return(
+      tibble(
+        "NAME" = FIRSTNAME,
+        "COUNTRYCODE" = COUNTRYCODE,
+        "GENDER" = if(length(gender)) gender else NA
+      )
+    )
+  }
+}
+
+first_author_names_gender <- first_author_names_countries %>% 
+  # Regex to strip initials
+  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
+  # Remove blanks
+  filter(nchar(FIRSTNAME) > 0) %>%
+  # Keep only distinct name-country values
+  distinct(FIRSTNAME, COUNTRYCODE) %>%
+  # Remove factors from COUNTRYCODE
+  mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
+  pmap_dfr(., getGenderFromName)
+
+last_author_names_gender <- last_author_names_countries %>% 
+  # Regex to strip initials
+  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
+  # Remove blanks
+  filter(nchar(FIRSTNAME) > 0) %>%
+  # Keep only distinct name-country values
+  distinct(FIRSTNAME, COUNTRYCODE) %>%
+  # Remove factors from COUNTRYCODE
+  mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
+  pmap_dfr(., getGenderFromName)
+
+
+write.csv(first_author_names_gender,
+          file="data/first_author_names_gender.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+write.csv(last_author_names_gender,
+          file="data/last_author_names_gender.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
+
+```{r}
+
+first_author_gender <- articles %>%
+  left_join(first_author_names, by="ARTICLE_DOI") %>%
+  distinct() %>%
+  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
+  left_join(first_author_countries, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(first_author_names_gender, by=c("FIRSTNAME" = "NAME",
+                                             "COUNTRYCODE")) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER) %>%
+  replace(., is.na(.), "unknown") %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  mutate(COUNT = n()) %>%
+  mutate(GENDER = ifelse(COUNT < 2, GENDER, "unknown")) %>%
+  select(-COUNT) %>%
+  ungroup() %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER)
+
+
+last_author_gender <- articles %>%
+  left_join(last_author_names, by="ARTICLE_DOI") %>%
+  distinct() %>%
+  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
+  left_join(last_author_countries, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(last_author_names_gender, by=c("FIRSTNAME" = "NAME",
+                                             "COUNTRYCODE")) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER) %>%
+  replace(., is.na(.), "unknown") %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  mutate(COUNT = n()) %>%
+  mutate(GENDER = ifelse(COUNT < 2, GENDER, "unknown")) %>%
+  select(-COUNT) %>%
+  ungroup() %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER)
+
+write.csv(first_author_gender,
+          file="data/first_author_gender.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+write.csv(last_author_gender,
+          file="data/last_author_gender.csv", 
+          row.names=FALSE, 
+          fileEncoding="UTF-8")
+
+```
+
 
