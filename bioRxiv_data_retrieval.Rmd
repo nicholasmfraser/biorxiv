@@ -753,6 +753,7 @@ con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 first_author_countries <- as_tibble(sqlQuery(con, read_file("sql/first_author_countries.sql")))
 last_author_countries <- as_tibble(sqlQuery(con, read_file("sql/last_author_countries.sql")))
 
+# Join author countries back to articles
 first_author_countries <- articles %>% 
   left_join(first_author_countries, by="ARTICLE_DOI") %>% 
   distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE)
@@ -766,6 +767,7 @@ odbcClose(con)
 # Remove redundant variables
 rm(query, con)
 
+# write to csv
 write.csv(first_author_countries,
           file="data/first_author_countries.csv", 
           row.names=FALSE, 
@@ -784,12 +786,16 @@ write.csv(last_author_countries,
 con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
 # First create a temporary table of all Author IDs for first and last authors
-#sqlQuery(con, read_file("sql/first_authors_ids.sql"))
-#sqlQuery(con, read_file("sql/last_authors_ids.sql"))
+sqlQuery(con, read_file("sql/first_authors_ids.sql"))
+sqlQuery(con, read_file("sql/last_authors_ids.sql"))
 
+# Retrieve academic ages of authors from Scopus
 first_author_age <- as_tibble(sqlQuery(con, read_file("sql/first_author_age.sql")))
 last_author_age <- as_tibble(sqlQuery(con, read_file("sql/last_author_age.sql")))
 
+# Join authors back to articles. Some authors come back with more than one value,
+# if Scopus has two records for the same author. In this case we take the highest
+# age
 first_author_age <- articles %>% 
   left_join(first_author_age, by="ARTICLE_DOI") %>% 
   distinct(PREPRINT_DOI, ARTICLE_DOI, AUTHOR_AGE) %>% 
@@ -804,14 +810,13 @@ last_author_age <- articles %>%
   arrange(desc(AUTHOR_AGE)) %>% 
   top_n(1) %>% 
   ungroup()
-
-
 # Close DB connection
 odbcClose(con)
 
 # Remove redundant variables
 rm(con)
 
+# write to csv
 write.csv(first_author_age,
           file="data/first_author_age.csv", 
           row.names=FALSE, 
@@ -841,20 +846,22 @@ first_author_names_countries <- first_author_names %>%
   inner_join(first_author_countries, by="ARTICLE_DOI") %>%
   select(FIRSTNAME, COUNTRYCODE) %>%
   distinct(FIRSTNAME, COUNTRYCODE)
-
 last_author_names_countries <- last_author_names %>%
   inner_join(last_author_countries, by="ARTICLE_DOI") %>%
   select(FIRSTNAME, COUNTRYCODE) %>%
   distinct(FIRSTNAME, COUNTRYCODE)
 
+# Function for retrieving gender from Gender API
 getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   
+  # If a country code is present, use a localized query
   if(!is.na(COUNTRYCODE)){
     # Convert countrycode to ISO3
     COUNTRY = countrycode(COUNTRYCODE, "iso3c", "iso2c")
     url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, "&country=", 
                 COUNTRY, "&key=", gender_api_key)
   }
+  # Otherwise use a general query
   else {
      url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, 
                    "&key=", gender_api_key)
@@ -864,7 +871,7 @@ getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   response <- httr::GET(url)
   gender <- httr::content(response)$gender 
   
-  # If gender unknown, try without country arguments
+  # If gender unknown, try without localization parameter
   if(isTRUE(gender == "unknown")) {
     url <- paste0("https://gender-api.com/get?name=", FIRSTNAME, 
                    "&key=", gender_api_key)
@@ -875,6 +882,7 @@ getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   # Check for empty response (404)
   if (response$status_code == 404) { 
     return()
+  # Otherwise return gender
   }else{
     return(
       tibble(
@@ -886,6 +894,8 @@ getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   }
 }
 
+# First we make a list of all potential name/country combinations, to reduce the
+# total number of API calls we need to make
 first_author_names_gender <- first_author_names_countries %>% 
   # Regex to strip initials
   mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
@@ -896,7 +906,6 @@ first_author_names_gender <- first_author_names_countries %>%
   # Remove factors from COUNTRYCODE
   mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
   pmap_dfr(., getGenderFromName)
-
 last_author_names_gender <- last_author_names_countries %>% 
   # Regex to strip initials
   mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
@@ -908,21 +917,10 @@ last_author_names_gender <- last_author_names_countries %>%
   mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
   pmap_dfr(., getGenderFromName)
 
-
-write.csv(first_author_names_gender,
-          file="data/first_author_names_gender.csv", 
-          row.names=FALSE, 
-          fileEncoding="UTF-8")
-write.csv(last_author_names_gender,
-          file="data/last_author_names_gender.csv", 
-          row.names=FALSE, 
-          fileEncoding="UTF-8")
-
-```
-
-
-```{r}
-
+# Genders are joined back to articles from the name/country/gender relationships
+# retrieved above. Where no gender is returned, we set gender to 'unknown'. A
+# very small number of queries return more than one result, in cases of 
+# conflicting information, we also set the gender to 'unknown'.
 first_author_gender <- articles %>%
   left_join(first_author_names, by="ARTICLE_DOI") %>%
   distinct() %>%
@@ -938,8 +936,6 @@ first_author_gender <- articles %>%
   select(-COUNT) %>%
   ungroup() %>%
   distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER)
-
-
 last_author_gender <- articles %>%
   left_join(last_author_names, by="ARTICLE_DOI") %>%
   distinct() %>%
@@ -956,11 +952,11 @@ last_author_gender <- articles %>%
   ungroup() %>%
   distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER)
 
+# write to csv
 write.csv(first_author_gender,
           file="data/first_author_gender.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
-
 write.csv(last_author_gender,
           file="data/last_author_gender.csv", 
           row.names=FALSE, 

@@ -1,14 +1,12 @@
-# Examining the citation and altmetric advantage of bioRxiv preprints
+# The effect of bioRxiv preprints on citations and altmetrics
 
-This repository contains code and data for the study entitled **Title Here**. A preprint of this manuscript is available on bioRxiv, here: **add link**
+This repository contains code and data for the study entitled **The effect of bioRxiv preprints on citations and altmetrics**. A preprint of this manuscript is available on bioRxiv, here: [**add link**](#)
 
 ## Background
 
 In this study we investigated citation and altmetric behaviour of preprints uploaded to bioRxiv, as well as for their relevant journal papers.
 
-Data was gathered from several diverse sources. Preprint and article metadata was retrieved from the [bioRxiv website](https://www.bioRxiv.org), [Crossref](https://www.crossref.org/), and from [Scopus](https://www.scopus.com). Scopus access was provided via the [German Competence Centre for Bibliometrics](http://www.forschungsinfo.de/Bibliometrie/en/index.php?id=infrastruktur), who operate a quality assured data infrastructure for conducting bibliometrics research. Scopus data is stored and queried via an Oracle database -  to ensure reprocibility we use a database 'snapshot' which contains all article metadata archived in mid-2018.
-
-These data were merged with additional data from Unpaywall (for determining open access status of manuscripts), Altmetric.com (for altmetric counts) and Gender API (for determining the gender of article authors).
+Data was gathered from several diverse sources. Preprint and article metadata was retrieved from the [bioRxiv website](https://www.bioRxiv.org), [Crossref](https://www.crossref.org/), and from [Scopus](https://www.scopus.com). Scopus access was provided via the [German Competence Centre for Bibliometrics](http://www.forschungsinfo.de/Bibliometrie/en/index.php?id=infrastruktur), who operate a quality assured data infrastructure for conducting bibliometrics research. Scopus data is stored and queried via an Oracle database -  to ensure reprocibility we use a database 'snapshot' which contains all article metadata archived in mid-2018. These data were merged with additional data from Unpaywall (for determining open access status of manuscripts), Altmetric.com (for altmetric counts) and Gender API (for determining the gender of article authors).
 
 All data retrieval, processing and visualisation steps were conducted in R, using the source code in this repository.
 
@@ -20,5 +18,5 @@ The repository is structured as follows:
 
 * `data` contains all raw data files produced during our analysis. The `analysis` folder within contains aggregated datasets produced by `bioRxiv_analysis.Rmd`.
 
-* `sql` contains all SQL scripts used to retrieve data from the KB Scopus data.
+* `sql` contains all SQL scripts used to retrieve data from our Scopus database.
 * `outputs/figures` contains all figures produced in the study, which are included in the manuscript.

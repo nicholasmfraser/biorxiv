@@ -128,7 +128,6 @@ read_csv("data/articles.csv") %>%
          ARTICLE_CREATED_DATE, 
          CITING_ARTICLE_CREATED_DATE, 
          TYPE) %>%
-  
   mutate(
     # Determine cited status of an article
     CITED = case_when(
@@ -180,10 +179,13 @@ read_csv("data/articles.csv") %>%
 # calculated impact factors on journal name and year, and aggregate into 
 # high, medium and low impact categories
 
+# Read article data
 article_IF_citations <- read_csv("data/articles.csv") %>% 
   mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
+  # Join citing articles
   left_join(read_csv("data/citing_articles.csv"), 
             by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  # Join IF data on journal title and year
   inner_join(read_csv("data/impact_factors.csv"), 
              by=c("SOURCETITLE", "YEAR")) %>%
   select(PREPRINT_DOI,
@@ -192,24 +194,29 @@ article_IF_citations <- read_csv("data/articles.csv") %>%
          CITING_ARTICLE_CREATED_DATE, 
          TYPE,
          IF) %>%
+  # Categorise into high, medium and low IF classes
   mutate(
     IF_CLASS = case_when(
       IF >= 8 ~ 'High IF',
       IF < 8 & IF >= 4  ~ 'Medium IF',
       IF < 4 ~ 'Low IF'
     ),
+    # Determine cited status of an article
     CITED = case_when(
       is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
       !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
     ),
+    # Calculate interval between publication and citation
     CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
                                             "months"),
                                  floor_date(date(CITING_ARTICLE_CREATED_DATE), 
                                             "months")) %/% months(1),
+    # Calculate an articles maximum citation interval within our time period
     MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
                                                 "months"),
                                      floor_date(date("2017-12-01"), 
                                                 "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
   complete(CITATION_INTERVAL, 
            nesting(PREPRINT_DOI,
                    ARTICLE_DOI, 
@@ -219,12 +226,13 @@ article_IF_citations <- read_csv("data/articles.csv") %>%
                    IF_CLASS,
                    MAX_CITATION_INTERVAL), 
            fill=list(CITED = 0)) %>%
+  # We only want to analyse the 36 month citation window
   filter(CITATION_INTERVAL >= 0, 
          CITATION_INTERVAL <= 36,
          CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
   group_by(PREPRINT_DOI, TYPE, IF_CLASS, CITATION_INTERVAL) %>%
-  summarize(CITATION_CNT = sum(CITED),
-            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  # Calculate summary statistics
+  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
   ungroup() %>%
   group_by(TYPE, IF_CLASS, CITATION_INTERVAL) %>%
   summarize(
@@ -240,9 +248,12 @@ article_IF_citations <- read_csv("data/articles.csv") %>%
 
 ```{r results='hide'}
 
+# Read preprint data
 read_csv("data/preprints.csv") %>%
+  # Join articles
   left_join(read_csv("data/articles.csv") %>% filter(TYPE=="Deposited"), 
             by="PREPRINT_DOI") %>%
+  # Determine published status
   mutate(
     IS_PUBLISHED = case_when(
       is.na(ARTICLE_DOI) ~ "Unpublished",
@@ -250,23 +261,28 @@ read_csv("data/preprints.csv") %>%
     )
   ) %>%
   select(PREPRINT_DOI, PREPRINT_POSTED_DATE, IS_PUBLISHED) %>%
+  # Join preprint citation data
   left_join(select(read_csv("data/preprint_citing_articles.csv"), 
                     PREPRINT_DOI, 
                     CITING_ARTICLE_CREATED_DATE), 
              by="PREPRINT_DOI") %>%
+  # Determine cited status
   mutate(
     CITED = case_when(
       is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
       !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
     ),
+    # Calculate interval between publication and citation
     CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
                                             "months"),
                                  floor_date(date(CITING_ARTICLE_CREATED_DATE), 
                                                  "months")) %/% months(1),
+    # Calculate an articles maximum citation interval within our time period
     MAX_CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
                                                 "months"),
                                      floor_date(date("2017-12-01"), 
                                                 "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
   complete(CITATION_INTERVAL, 
            nesting(PREPRINT_DOI, 
                    PREPRINT_POSTED_DATE, 
@@ -274,12 +290,13 @@ read_csv("data/preprints.csv") %>%
                    MAX_CITATION_INTERVAL,
                    IS_PUBLISHED), 
            fill=list(CITED = 0)) %>%
+  # We only want to analyse the 36 month citation window
   filter(CITATION_INTERVAL >= 0, 
          CITATION_INTERVAL <= 36,
          CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
   group_by(PREPRINT_DOI, CITATION_INTERVAL, IS_PUBLISHED) %>%
-  summarize(CITATION_CNT = sum(CITED),
-            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  # Calculate summary statistics
+  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
   ungroup() %>%
   group_by(IS_PUBLISHED, CITATION_INTERVAL) %>%
   summarize(
@@ -333,8 +350,7 @@ preprint_published_citations <- read_csv("data/preprints.csv") %>%
          CITATION_INTERVAL <= MAX_CITATION_INTERVAL,
          CITATION_INTERVAL >= MIN_CITATION_INTERVAL) %>%
   group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
-  summarize(CITATION_CNT = sum(CITED),
-            LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
+  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
   ungroup() %>%
   group_by(CITATION_INTERVAL) %>%
   summarize(
@@ -449,6 +465,373 @@ read_csv("data/articles.csv") %>%
 
 ```
 
+# Regression Analysis ----------------------------------------------------------
 
+### Summary Dataset
+
+Data from various extracted data sets are aggregated into a single summary dataframe:
+
+- Article metadata
+- Impact factors
+- OA status
+- Author countries
+- Author academic age
+- Gender
+
+```{r results='hide'}
+
+# Read article data
+summary <- read_csv("data/articles.csv") %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, ARTICLE_CREATED_DATE,
+         SOURCETITLE, DOCTYPE, AUTHOR_CNT, TYPE) %>%
+  # Code deposition status for regression
+  mutate(
+    IS_DEPOSITED = case_when(
+      TYPE == "Deposited" ~ 1,
+      TYPE == "Control" ~ 0
+    )
+  ) %>%
+  # Code article type for regression
+  mutate(
+    IS_REVIEW = case_when(
+      DOCTYPE == 're' ~ 1,
+      DOCTYPE == 'ar' ~ 0
+    )
+  ) %>%
+  select(-DOCTYPE) %>%
+  # Join IF data by journal name and publication year
+  # If no IF is found (e.g. in recently launched journals), IF is set to 0
+  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
+  left_join(., read_csv("data/impact_factors.csv"),
+             by=c("SOURCETITLE", "YEAR")) %>%
+  select(-YEAR) %>%
+  mutate(IF = replace_na(IF, 0)) %>%
+  # Join OA status
+  inner_join(., read_csv("data/article_oa_status.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  select(-JOURNAL_IS_OA) %>%
+  mutate(IS_OA = as.numeric(IS_OA)) %>%
+  # Join first author countries. Countries are coded either as US or non-US
+  # for regression analysis.
+  left_join(., read_csv("data/first_author_countries.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(
+    FIRST_AUTHOR_IS_US = case_when(
+      COUNTRYCODE == 'USA' ~ 1,
+      COUNTRYCODE != 'USA' ~ 0,
+      is.na(COUNTRYCODE) ~ 0
+    )
+  ) %>%
+  # If an author has multiple countries, we are interested in if any are US
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(FIRST_AUTHOR_IS_US)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup %>%
+  select(-COUNTRYCODE) %>%
+  # Join last author countries
+  left_join(., read_csv("data/last_author_countries.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(
+    LAST_AUTHOR_IS_US = case_when(
+      COUNTRYCODE == 'USA' ~ 1,
+      COUNTRYCODE != 'USA' ~ 0,
+      is.na(COUNTRYCODE) ~ 0
+    )
+  ) %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(LAST_AUTHOR_IS_US)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup %>%
+  select(-COUNTRYCODE) %>%
+  # Join author academic age
+  inner_join(., read_csv("data/first_author_age.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  rename(FIRST_AUTHOR_AGE = AUTHOR_AGE) %>%
+  inner_join(., read_csv("data/last_author_age.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  rename(LAST_AUTHOR_AGE = AUTHOR_AGE) %>%
+  # Join and code author gender
+  inner_join(., read_csv("data/first_author_gender.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(
+    FIRST_AUTHOR_IS_FEMALE = case_when(
+      GENDER == 'female' ~ 1,
+      GENDER == 'male' ~ 0
+    )
+  ) %>%
+  select(-GENDER) %>%
+  inner_join(., read_csv("data/last_author_gender.csv"),
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(
+    LAST_AUTHOR_IS_FEMALE = case_when(
+      GENDER == 'female' ~ 1,
+      GENDER == 'male' ~ 0
+    )
+  ) %>%
+  select(-GENDER) %>%
+  # Remove columns that have missing values for gender
+  group_by(PREPRINT_DOI) %>% 
+  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE)), 
+         !any(is.na(LAST_AUTHOR_IS_FEMALE))) %>%
+  ungroup()
+
+```
+
+### Regression analysis: 6-month citations
+
+```{r results='hide'}
+
+article_6_month_citations <- read_csv("data/articles.csv") %>% 
+  left_join(read_csv("data/citing_articles.csv"), 
+            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  select(PREPRINT_DOI,
+         ARTICLE_DOI, 
+         ARTICLE_CREATED_DATE, 
+         CITING_ARTICLE_CREATED_DATE, 
+         TYPE) %>%
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   ARTICLE_DOI, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   TYPE, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
+  filter(MAX_CITATION_INTERVAL >= 6,
+         CITATION_INTERVAL >= 0,
+         CITATION_INTERVAL <= 6) %>%
+  summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup()
+
+regression_data <- summary %>%
+  inner_join(., article_6_month_citations,
+             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
+
+library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
+library(MASS)
+
+# Citations
+fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+summary(fit)
+lm.beta(fit)
+
+detach("package:QuantPsyc", unload=TRUE) # detach package
+detach("package:MASS", unload=TRUE) # detach package
+
+rm(regression_data, fit, article_6_month_citations)
+
+```
+
+### Regression analysis: 12-month citations
+
+```{r results='hide'}
+
+article_12_month_citations <- read_csv("data/articles.csv") %>% 
+  left_join(read_csv("data/citing_articles.csv"), 
+            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  select(PREPRINT_DOI,
+         ARTICLE_DOI, 
+         ARTICLE_CREATED_DATE, 
+         CITING_ARTICLE_CREATED_DATE, 
+         TYPE) %>%
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   ARTICLE_DOI, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   TYPE, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
+  filter(MAX_CITATION_INTERVAL >= 12,
+         CITATION_INTERVAL >= 0,
+         CITATION_INTERVAL <= 12) %>%
+  summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup()
+
+regression_data <- summary %>%
+  inner_join(., article_12_month_citations,
+             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
+
+library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
+library(MASS)
+
+# Citations
+fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+summary(fit)
+lm.beta(fit)
+
+detach("package:QuantPsyc", unload=TRUE) # detach package
+detach("package:MASS", unload=TRUE) # detach package
+
+rm(regression_data, fit, article_12_month_citations)
+
+```
+
+### Regression analysis: 24-month citations
+
+```{r results='hide'}
+
+article_24_month_citations <- read_csv("data/articles.csv") %>% 
+  left_join(read_csv("data/citing_articles.csv"), 
+            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  select(PREPRINT_DOI,
+         ARTICLE_DOI, 
+         ARTICLE_CREATED_DATE, 
+         CITING_ARTICLE_CREATED_DATE, 
+         TYPE) %>%
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1),
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   ARTICLE_DOI, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   TYPE, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
+  filter(MAX_CITATION_INTERVAL >= 24,
+         CITATION_INTERVAL >= 0,
+         CITATION_INTERVAL <= 24) %>%
+  summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup()
+
+regression_data <- summary %>%
+  inner_join(., article_24_month_citations,
+             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
+
+library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
+library(MASS)
+
+# Citations
+fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+summary(fit)
+lm.beta(fit)
+
+detach("package:QuantPsyc", unload=TRUE) # detach package
+detach("package:MASS", unload=TRUE) # detach package
+
+rm(regression_data, fit, article_24_month_citations)
+
+```
+
+```{r results='hide'}
+
+regression_data <- summary %>%
+# join altmetrics
+  inner_join(., read_csv("data/article_altmetrics.csv"), 
+             by=c("PREPRINT_DOI", "ARTICLE_DOI"))
+  
+library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
+library(MASS)
+
+# Citations
+fit_tweets <- glm.nb(ALT_TWEETS ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+fit_feeds <- glm.nb(ALT_FEEDS ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+fit_msm <- glm.nb(ALT_MSM ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+fit_wikipedia <- glm.nb(ALT_WIKIPEDIA ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+fit_mendeley <- glm.nb(ALT_MENDELEY ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
+                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
+                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
+                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
+              data = regression_data, control=glm.control(maxit=50))
+
+summary(fit_tweets)
+lm.beta(fit_tweets)
+
+summary(fit_feeds)
+lm.beta(fit_feeds)
+
+summary(fit_msm)
+lm.beta(fit_msm)
+
+summary(fit_wikipedia)
+lm.beta(fit_wikipedia)
+
+summary(fit_mendeley)
+lm.beta(fit_mendeley)
+
+detach("package:QuantPsyc", unload=TRUE) # detach package
+detach("package:MASS", unload=TRUE) # detach package
+
+rm(regression_data, fit)
+
+```
 
 
