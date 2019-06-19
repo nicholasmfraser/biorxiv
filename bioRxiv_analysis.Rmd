@@ -715,6 +715,8 @@ detach("package:MASS", unload=TRUE) # detach package
 
 ```
 
+### Regression analysis: Altmetrics
+
 ```{r results='hide'}
 
 regression_data <- summary %>%

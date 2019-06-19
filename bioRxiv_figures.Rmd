@@ -161,10 +161,7 @@ rm(p1, p2, plot)
 
 ```
 
-### Figure 4
-
-Monthly citation rates of bioRxiv-deposited and control articles, classified by
-impact factor of journal (high/medium/low).
+### Figure 4: Monthly citation rates of bioRxiv-deposited and control articles in IF categories
 
 ```{r results='hide'}
 
@@ -173,7 +170,10 @@ impact factor of journal (high/medium/low).
 p1 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
   mutate(TYPE = factor(TYPE, levels=c("Deposited", "Control")),
          IF_CLASS = factor(IF_CLASS, 
-                           levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF"))) %>%
+                           levels=c("High IF", 
+                                    "Med-High IF", 
+                                    "Med-Low IF", 
+                                    "Low IF"))) %>%
   ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN, group=TYPE)) +
   geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), 
               linetype=2, alpha=0.1) +
@@ -221,14 +221,20 @@ p2 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
         plot.margin = margin(0.2, 0.6, 0, 0.8, "cm"), # Manual shuffling of legend position
         panel.grid.minor = element_blank())
 
+# Arrange panels
 plot <- ggarrange(p1, p2, labels = c("A", "B"), 
                   ncol = 1, nrow = 2, align="v", heights=c(3,1))
-    
-ggsave("outputs/figures/fig_4_monthly_articles_cpp_IF.png", plot, width=width, height=height_large, units="cm", dpi=resolution)
+
+# Save plot    
+ggsave("outputs/figures/fig_4_monthly_articles_cpp_IF.png", 
+       plot, 
+       width=width, 
+       height=height_large, 
+       units="cm", 
+       dpi=resolution)
 ```
 
-### Figure 5
-
+### Figure 5: Monthly citation rates for published and unpublished preprints
 
 ```{r results='hide'}
 
@@ -272,9 +278,11 @@ p2 <- read_csv("data/analysis/monthly_preprints_cpp.csv") %>%
                                          linetype="solid"),
         legend.direction = "horizontal")
 
+# Arrange panels
 plot <- ggarrange(p1, p2, labels = c("A", "B"), 
                   ncol = 1, nrow = 2, align="v", heights=c(2,1))
 
+# Save plot
 ggsave("outputs/figures/fig_5_monthly_preprints_cpp.png", 
        plot, 
        width=width, 
@@ -286,10 +294,11 @@ rm(p1, p2, plot)
 
 ```
 
-### Figure 6
+### Figure 6: Monthly citation rates for preprints as a function of time before/after journal publication
 
-```{r}
+```{r results='hide'}
 
+# Monthly Cpp of preprints.
 p1 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
   ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN)) +
   geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), linetype=2, alpha=0.1) +
@@ -302,6 +311,7 @@ p1 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
   scale_x_continuous(limits=c(-12, 24), breaks = c(-12, -6, 0, 6, 12, 18, 24), position="top") +
   coord_cartesian(ylim=c(0,0.03))
 
+# Sample size at each
 p2 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
   ggplot(aes(x=CITATION_INTERVAL, y=N)) +
   geom_bar(stat="identity") +
@@ -313,9 +323,11 @@ p2 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
   theme(plot.margin = margin(0, 0, 0, 1, "cm"),
         panel.grid.minor = element_blank())
 
+# Arrange panels
 plot <- ggarrange(p1, p2, labels = c("A", "B"), 
                   ncol = 1, nrow = 2, align="v", heights=c(2,1))
 
+# Save plot
 ggsave("outputs/figures/fig_6_monthly_published_preprints_cpp.png", 
        plot, 
        width=width, 
@@ -328,14 +340,16 @@ rm(p1, p2, plot)
 ```
 
 
-### Figure 7
+### Figure 7: Altmetrics of preprints, bioRxiv-deposited and control articles
 
 ```{r results='hide'}
 
+# Read altmetrics data for preprints and journal articles
 altmetrics <- read_csv("data/analysis/article_altmetrics_summary.csv") %>%
   bind_rows(read_csv("data/analysis/preprint_altmetrics_summary.csv")) %>%
   mutate(TYPE=factor(TYPE, levels=c("Preprint", "Deposited", "Control")))
-  
+
+# Altmetrics coverage
 p1 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=PCT_HAS_ALTMETRIC, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -344,6 +358,7 @@ p1 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Mean tweets
 p2 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=TWEETS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -354,6 +369,7 @@ p2 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Meanblog  mentions
 p3 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=FEEDS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -364,6 +380,7 @@ p3 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Mean mainstream media mentions
 p4 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=MSM_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -373,6 +390,7 @@ p4 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Mean wikipedia mentions
 p5 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=WIKIPEDIA_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -382,6 +400,7 @@ p5 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Mean Mendeley reads
 p6 <- altmetrics %>%
   ggplot(aes(x=TYPE, y=MENDELEY_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -391,9 +410,11 @@ p6 <- altmetrics %>%
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Arrange panels
 plot <- ggarrange(p1, p2, p3, p4, p5, p6, labels=c("A", "B", "C", "D", "E", "F"),
                   ncol = 6, nrow = 1, align="h", common.legend = TRUE, legend="top")
 
+# Save plot
 ggsave("outputs/figures/fig_7_altmetrics_summary.png", 
        plot,
        width=width*1.5, 
@@ -405,14 +426,19 @@ rm(p1, p2, p3, p4, p5, p6, plot, article_altmetrics)
 
 ```
 
-### Figure 8
+### Figure 8: Altmetrics of bioRxiv-deposited and control articles in IF categories
 
 ```{r results='hide'}
 
+# Read data
 altmetrics_IF <- read_csv("data/analysis/article_altmetrics_IF_summary.csv") %>%
   mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control")),
-         IF_CLASS=factor(IF_CLASS, levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF")))
+         IF_CLASS=factor(IF_CLASS, levels=c("High IF", 
+                                            "Med-High IF", 
+                                            "Med-Low IF", 
+                                            "Low IF")))
 
+# Mean coverage
 p1 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=PCT_HAS_ALTMETRIC, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -426,6 +452,7 @@ p1 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30")) +
   facet_grid(rows=vars(IF_CLASS))
 
+# Mean tweets
 p2 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=TWEETS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -440,6 +467,7 @@ p2 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30")) +
   facet_grid(rows=vars(IF_CLASS))
 
+# Mean blog mentions
 p3 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=FEEDS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -454,6 +482,7 @@ p3 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30"))+
   facet_grid(rows=vars(IF_CLASS))
 
+# Mean mainstream media mentions
 p4 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=MSM_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -468,6 +497,7 @@ p4 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30"))+
   facet_grid(rows=vars(IF_CLASS))
 
+# Mean Wikipedia mentions
 p5 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=WIKIPEDIA_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -482,6 +512,7 @@ p5 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30"))+
   facet_grid(rows=vars(IF_CLASS))
 
+# Mean Mendeley reads
 p6 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=MENDELEY_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
@@ -496,9 +527,11 @@ p6 <- altmetrics_IF %>%
         strip.text.x=element_text(size=8, colour = "grey30"))+
   facet_grid(rows=vars(IF_CLASS))
 
+# Arrange panels
 plot <- ggarrange(p1, p2, p3, p4, p5, p6, labels=c("A", "B", "C", "D", "E", "F"),
                   ncol = 6, nrow = 1, align="h", common.legend = TRUE, legend="top")
 
+# Save plot
 ggsave("outputs/figures/fig_8_altmetrics_IF_summary.png", 
        plot, 
        width=width*1.5, 
