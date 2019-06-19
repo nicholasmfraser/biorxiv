@@ -16,8 +16,7 @@ FROM (
         AND t2.PUBYEAR <= 2017
         AND t2.REF_CNT > 0
         AND t2.DOI IS NOT NULL
-        -- Limit articles to journal articles, etcc
-    INNER JOIN
+    LEFT JOIN
         SCOPUS_B_2018.CITINGITEMS t3
     ON
         t3.FK_ITEMS_CITED = t2.PK_ITEMS
@@ -25,5 +24,5 @@ FROM (
     GROUP BY
         t1.SOURCETITLE, t2.PUBYEAR, t3.CITYEAR
     )
-GROUP BY SOURCETITLE, CITYEAR)
+GROUP BY SOURCETITLE, CITYEAR
 

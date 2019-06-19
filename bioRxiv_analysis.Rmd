@@ -114,18 +114,22 @@ read_csv("data/articles.csv") %>%
 
 ```
 
-### How have citation rates of bioRxiv-deposited and control articles evolved over time?
+### Build dataset of article citations
 
-```{r results='hide'}
+```{r}
 
-# Read article data
-read_csv("data/articles.csv") %>%
+# Join articles data with citing articles data. For each article we calculate
+# the number of citations per month, up to its maximum citation interval. Where
+# no citations are found in a month, citation counts are zero.
+
+article_citations <- read_csv("data/articles.csv") %>%
   # Join with citing articles
   left_join(read_csv("data/citing_articles.csv"), 
             by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
   select(PREPRINT_DOI, 
-         ARTICLE_DOI, 
-         ARTICLE_CREATED_DATE, 
+         ARTICLE_DOI,
+         SOURCETITLE,
+         ARTICLE_CREATED_DATE,
          CITING_ARTICLE_CREATED_DATE, 
          TYPE) %>%
   mutate(
@@ -147,16 +151,28 @@ read_csv("data/articles.csv") %>%
   # Expand data to include all article/interval combinations
   complete(CITATION_INTERVAL, 
            nesting(PREPRINT_DOI, 
-                   ARTICLE_DOI, 
+                   ARTICLE_DOI,
+                   SOURCETITLE,
                    ARTICLE_CREATED_DATE, 
                    CITING_ARTICLE_CREATED_DATE,
                    TYPE, 
                    MAX_CITATION_INTERVAL), 
            fill=list(CITED = 0)) %>%
-  # We only want to analyse the 36 month citation window
+  # We only want to analyse up to the 36 month citation window
   filter(CITATION_INTERVAL >= 0, 
          CITATION_INTERVAL <= 36,
-         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL)
+
+```
+
+### How have citation rates of bioRxiv-deposited and control articles evolved over time?
+
+```{r results='hide'}
+
+# Calculate average citation rates per group per month. Citation counts are 
+# log transformed prior to taking the mean and 95% conf. intervals.
+
+article_citations %>%
   group_by(PREPRINT_DOI, TYPE, CITATION_INTERVAL) %>%
   # Calculate summary statistics
   summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
@@ -173,63 +189,42 @@ read_csv("data/articles.csv") %>%
 
 ### What is the relationship between citation rates and impact factors?
 
-```{r results='hide'}
+```{r}
 
-# Join articles to citing articles, as previously. Additionally join
-# calculated impact factors on journal name and year, and aggregate into 
-# high, medium and low impact categories
+# Retrieve IF quartiles
 
-# Read article data
-article_IF_citations <- read_csv("data/articles.csv") %>% 
+IF <- read_csv("data/articles.csv") %>%
   mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
-  # Join citing articles
-  left_join(read_csv("data/citing_articles.csv"), 
-            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
-  # Join IF data on journal title and year
   inner_join(read_csv("data/impact_factors.csv"), 
              by=c("SOURCETITLE", "YEAR")) %>%
-  select(PREPRINT_DOI,
-         ARTICLE_DOI, 
-         ARTICLE_CREATED_DATE, 
-         CITING_ARTICLE_CREATED_DATE, 
-         TYPE,
-         IF) %>%
-  # Categorise into high, medium and low IF classes
+  pull(IF)
+
+IF_Q1 <- quantile(IF, 0.25)
+IF_Q2 <- quantile(IF, 0.5)
+IF_Q3 <- quantile(IF, 0.75)
+
+```
+
+
+```{r results='hide'}
+
+# Calculate average citation rates per group per month, further subdivided
+# into IF quartiles, by joining with IF data on both the sourcetitle and year
+
+article_citations %>%
+  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
+  inner_join(read_csv("data/impact_factors.csv"), 
+             by=c("SOURCETITLE", "YEAR")) %>%
+  # Categorise into high, medium and low IF classes. 
+  # High = upper IF quartile (~7), low = lower IF quartile (~3.3)
   mutate(
     IF_CLASS = case_when(
-      IF >= 8 ~ 'High IF',
-      IF < 8 & IF >= 4  ~ 'Medium IF',
-      IF < 4 ~ 'Low IF'
-    ),
-    # Determine cited status of an article
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    # Calculate interval between publication and citation
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1),
-    # Calculate an articles maximum citation interval within our time period
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  # Expand data to include all article/interval combinations
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI,
-                   ARTICLE_DOI, 
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   TYPE,
-                   IF_CLASS,
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
-  # We only want to analyse the 36 month citation window
-  filter(CITATION_INTERVAL >= 0, 
-         CITATION_INTERVAL <= 36,
-         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+      IF >= IF_Q3 ~ 'High IF',
+      IF < IF_Q3 & IF >= IF_Q2 ~ 'Med-High IF',
+      IF < IF_Q2 & IF >= IF_Q1  ~ 'Med-Low IF',
+      IF < IF_Q1 ~ 'Low IF'
+    )
+  ) %>%
   group_by(PREPRINT_DOI, TYPE, IF_CLASS, CITATION_INTERVAL) %>%
   # Calculate summary statistics
   summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
@@ -247,6 +242,10 @@ article_IF_citations <- read_csv("data/articles.csv") %>%
 ### How have citations to published and unpublished preprints evolved over time?
 
 ```{r results='hide'}
+
+# Calculate citation intervals as a function of the time between preprint 
+# deposition and citing article publication date. Preprints are classified 
+# into those that have been published in a journal, and those that are not.
 
 # Read preprint data
 read_csv("data/preprints.csv") %>%
@@ -290,7 +289,7 @@ read_csv("data/preprints.csv") %>%
                    MAX_CITATION_INTERVAL,
                    IS_PUBLISHED), 
            fill=list(CITED = 0)) %>%
-  # We only want to analyse the 36 month citation window
+  # Limit to 36 month citation window
   filter(CITATION_INTERVAL >= 0, 
          CITATION_INTERVAL <= 36,
          CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
@@ -303,8 +302,7 @@ read_csv("data/preprints.csv") %>%
     N = n(),
     CPP_MEAN = mean(LOG_CITATION_CNT),
     CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
-  ) %>% 
-  write_csv(path="data/analysis/monthly_preprints_cpp.csv")
+  ) %>% write_csv(path="data/analysis/monthly_preprints_cpp.csv")
 
 ```
 
@@ -312,31 +310,43 @@ read_csv("data/preprints.csv") %>%
 
 ```{r results='hide'}
 
+# Join preprint data to articles data, and calculate citation intervals as a
+# function of the time between the citing article created date and the 
+# publication date of the journal article associated with the preprint
+
+# Read preprint data
 preprint_published_citations <- read_csv("data/preprints.csv") %>%
+  # Join articles
   inner_join(read_csv("data/articles.csv"), by="PREPRINT_DOI") %>%
   filter(TYPE == "Deposited") %>%
+  # Join preprint citation data
   select(PREPRINT_DOI, PREPRINT_POSTED_DATE, ARTICLE_CREATED_DATE) %>%
   left_join(select(read_csv("data/preprint_citing_articles.csv"), 
                     PREPRINT_DOI, 
                     CITING_ARTICLE_CREATED_DATE), 
              by="PREPRINT_DOI") %>%
+  # Determine cited status
   mutate(
     CITED = case_when(
       is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
       !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
     ),
+    # Calculate interval between preprint deposition and journal article publication
     MIN_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
                                                 "months"), 
                                      floor_date(date(PREPRINT_POSTED_DATE), 
                                                 "months")) %/% months(1),
+    # Calculate maximum potential citation interval
     MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
                                                 "months"),
                                      floor_date(date("2017-12-01"), 
                                                 "months")) %/% months(1),
+    # Calculate interval between publication and citation
     CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
                                             "months"),
                                  floor_date(date(CITING_ARTICLE_CREATED_DATE), 
                                             "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
   complete(CITATION_INTERVAL, 
            nesting(PREPRINT_DOI, 
                    PREPRINT_POSTED_DATE, 
@@ -345,10 +355,12 @@ preprint_published_citations <- read_csv("data/preprints.csv") %>%
                    MIN_CITATION_INTERVAL, 
                    MAX_CITATION_INTERVAL), 
            fill=list(CITED = 0)) %>%
+  # Limit citation interval to 12 months prior to, and 24 months following publication
   filter(CITATION_INTERVAL >= -12, 
          CITATION_INTERVAL <= 24,
          CITATION_INTERVAL <= MAX_CITATION_INTERVAL,
          CITATION_INTERVAL >= MIN_CITATION_INTERVAL) %>%
+  # Calculate summary statistics
   group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
   summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
   ungroup() %>%
@@ -362,14 +374,20 @@ preprint_published_citations <- read_csv("data/preprints.csv") %>%
 
 ```
 
-### How do altmetrics differ between bioRxiv-deposited and control articles?
+### How do altmetrics differ between bioRxiv-deposited articles, control articles and preprints?
 
 ```{r results='hide'}
 
+# Calculate summary statistics for each altmetric indicator for bioRxiv and
+# control articles
+
+# Read article data
 read_csv("data/articles.csv") %>% 
+  # Join altmetrics data
   inner_join(read_csv("data/article_altmetrics.csv"), 
              by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
   mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control"))) %>%
+  # Calculate summary statistics
   group_by(TYPE) %>%
   summarize(
     PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
@@ -393,8 +411,12 @@ read_csv("data/articles.csv") %>%
     MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
   write_csv("data/analysis/article_altmetrics_summary.csv")
 
+# Do the same for preprints
+
+# Read preprints altmetrics data
 read_csv("data/preprint_altmetrics.csv") %>%
   mutate(TYPE = factor("Preprint")) %>%
+  # Calculate summary statistics
   group_by(TYPE) %>%
   summarize(
     PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
@@ -424,21 +446,29 @@ read_csv("data/preprint_altmetrics.csv") %>%
 
 ```{r results='hide'}
 
+# Calculate summary statistics for each altmetric indicator for bioRxiv and
+# control articles, further subdivided by IF quartiles
+
+# Read article data
 read_csv("data/articles.csv") %>% 
+  # Join altmetrics data
   inner_join(read_csv("data/article_altmetrics.csv"), 
              by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
   mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y")),
          TYPE = factor(TYPE, levels=c("Deposited", "Control"))) %>%
+  # Join IF data on SOURCETITLE and Year
   inner_join(read_csv("data/impact_factors.csv"), 
              by=c("SOURCETITLE", "YEAR")) %>%
+  # Assign IF quartiles
   mutate(
     IF_CLASS = case_when(
-      IF >= 8 ~ 'High IF',
-      IF < 8 & IF >= 4  ~ 'Medium IF',
-      IF < 4 ~ 'Low IF'
-    ),
-    IF_CLASS = factor(IF_CLASS, levels=c("High IF", "Medium IF", "Low IF"))
+      IF >= IF_Q3 ~ 'High IF',
+      IF < IF_Q3 & IF >= IF_Q2 ~ 'Med-High IF',
+      IF < IF_Q2 & IF >= IF_Q1  ~ 'Med-Low IF',
+      IF < IF_Q1 ~ 'Low IF'
+    )
   ) %>%
+  # Calculate summary statistics
   group_by(IF_CLASS, TYPE) %>%
   summarize(
     PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
@@ -461,7 +491,6 @@ read_csv("data/articles.csv") %>%
     MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
     MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
   write_csv("data/analysis/article_altmetrics_IF_summary.csv")
-
 
 ```
 
@@ -500,12 +529,10 @@ summary <- read_csv("data/articles.csv") %>%
   ) %>%
   select(-DOCTYPE) %>%
   # Join IF data by journal name and publication year
-  # If no IF is found (e.g. in recently launched journals), IF is set to 0
   mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
   left_join(., read_csv("data/impact_factors.csv"),
              by=c("SOURCETITLE", "YEAR")) %>%
   select(-YEAR) %>%
-  mutate(IF = replace_na(IF, 0)) %>%
   # Join OA status
   inner_join(., read_csv("data/article_oa_status.csv"),
              by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
@@ -570,12 +597,7 @@ summary <- read_csv("data/articles.csv") %>%
       GENDER == 'male' ~ 0
     )
   ) %>%
-  select(-GENDER) %>%
-  # Remove columns that have missing values for gender
-  group_by(PREPRINT_DOI) %>% 
-  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE)), 
-         !any(is.na(LAST_AUTHOR_IS_FEMALE))) %>%
-  ungroup()
+  select(-GENDER)
 
 ```
 
@@ -583,45 +605,21 @@ summary <- read_csv("data/articles.csv") %>%
 
 ```{r results='hide'}
 
-article_6_month_citations <- read_csv("data/articles.csv") %>% 
-  left_join(read_csv("data/citing_articles.csv"), 
-            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
-  select(PREPRINT_DOI,
-         ARTICLE_DOI, 
-         ARTICLE_CREATED_DATE, 
-         CITING_ARTICLE_CREATED_DATE, 
-         TYPE) %>%
-  mutate(
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1),
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   ARTICLE_DOI, 
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   TYPE, 
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
+regression_data <- article_citations %>%
   group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
   filter(MAX_CITATION_INTERVAL >= 6,
          CITATION_INTERVAL >= 0,
          CITATION_INTERVAL <= 6) %>%
   summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup() %>%
+  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
+  group_by(PREPRINT_DOI) %>%
+  # for missing values (only occurring in in author gender and IF), filter out 
+  # both the deposited and control article
+  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
+              is.na(LAST_AUTHOR_IS_FEMALE),
+              is.na(IF))) %>%
   ungroup()
-
-regression_data <- summary %>%
-  inner_join(., article_6_month_citations,
-             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
 
 library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
 library(MASS)
@@ -638,8 +636,6 @@ lm.beta(fit)
 
 detach("package:QuantPsyc", unload=TRUE) # detach package
 detach("package:MASS", unload=TRUE) # detach package
-
-rm(regression_data, fit, article_6_month_citations)
 
 ```
 
@@ -647,45 +643,21 @@ rm(regression_data, fit, article_6_month_citations)
 
 ```{r results='hide'}
 
-article_12_month_citations <- read_csv("data/articles.csv") %>% 
-  left_join(read_csv("data/citing_articles.csv"), 
-            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
-  select(PREPRINT_DOI,
-         ARTICLE_DOI, 
-         ARTICLE_CREATED_DATE, 
-         CITING_ARTICLE_CREATED_DATE, 
-         TYPE) %>%
-  mutate(
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1),
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   ARTICLE_DOI, 
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   TYPE, 
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
+regression_data <- article_citations %>%
   group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
   filter(MAX_CITATION_INTERVAL >= 12,
          CITATION_INTERVAL >= 0,
          CITATION_INTERVAL <= 12) %>%
   summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup() %>%
+  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
+  group_by(PREPRINT_DOI) %>%
+  # for missing values (only occurring in in author gender and IF), filter out 
+  # both the deposited and control article
+  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
+              is.na(LAST_AUTHOR_IS_FEMALE),
+              is.na(IF))) %>%
   ungroup()
-
-regression_data <- summary %>%
-  inner_join(., article_12_month_citations,
-             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
 
 library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
 library(MASS)
@@ -702,8 +674,6 @@ lm.beta(fit)
 
 detach("package:QuantPsyc", unload=TRUE) # detach package
 detach("package:MASS", unload=TRUE) # detach package
-
-rm(regression_data, fit, article_12_month_citations)
 
 ```
 
@@ -711,45 +681,21 @@ rm(regression_data, fit, article_12_month_citations)
 
 ```{r results='hide'}
 
-article_24_month_citations <- read_csv("data/articles.csv") %>% 
-  left_join(read_csv("data/citing_articles.csv"), 
-            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
-  select(PREPRINT_DOI,
-         ARTICLE_DOI, 
-         ARTICLE_CREATED_DATE, 
-         CITING_ARTICLE_CREATED_DATE, 
-         TYPE) %>%
-  mutate(
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1),
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   ARTICLE_DOI, 
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   TYPE, 
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
+regression_data <- article_citations %>%
   group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
   filter(MAX_CITATION_INTERVAL >= 24,
          CITATION_INTERVAL >= 0,
-         CITATION_INTERVAL <= 24) %>%
+         CITATION_INTERVAL <=24) %>%
   summarize(CITATION_CNT = sum(CITED)) %>%
+  ungroup() %>%
+  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
+  group_by(PREPRINT_DOI) %>%
+  # for missing values (only occurring in in author gender and IF), filter out 
+  # both the deposited and control article
+  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
+              is.na(LAST_AUTHOR_IS_FEMALE),
+              is.na(IF))) %>%
   ungroup()
-
-regression_data <- summary %>%
-  inner_join(., article_24_month_citations,
-             by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE"))
 
 library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
 library(MASS)
@@ -766,8 +712,6 @@ lm.beta(fit)
 
 detach("package:QuantPsyc", unload=TRUE) # detach package
 detach("package:MASS", unload=TRUE) # detach package
-
-rm(regression_data, fit, article_24_month_citations)
 
 ```
 
@@ -776,12 +720,18 @@ rm(regression_data, fit, article_24_month_citations)
 regression_data <- summary %>%
 # join altmetrics
   inner_join(., read_csv("data/article_altmetrics.csv"), 
-             by=c("PREPRINT_DOI", "ARTICLE_DOI"))
+             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(PREPRINT_DOI) %>%
+  # for missing values (only occurring in in author gender and IF), filter out 
+  # both the deposited and control article
+  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
+              is.na(LAST_AUTHOR_IS_FEMALE),
+              is.na(IF))) %>%
+  ungroup()
   
 library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
 library(MASS)
 
-# Citations
 fit_tweets <- glm.nb(ALT_TWEETS ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
                 FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
                 FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
@@ -810,7 +760,7 @@ fit_mendeley <- glm.nb(ALT_MENDELEY ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + I
                 FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
                 FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
                 FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
+              data = regression_data, control=glm.control(maxit=100))
 
 summary(fit_tweets)
 lm.beta(fit_tweets)
@@ -829,8 +779,6 @@ lm.beta(fit_mendeley)
 
 detach("package:QuantPsyc", unload=TRUE) # detach package
 detach("package:MASS", unload=TRUE) # detach package
-
-rm(regression_data, fit)
 
 ```
 

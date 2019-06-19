@@ -173,7 +173,7 @@ impact factor of journal (high/medium/low).
 p1 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
   mutate(TYPE = factor(TYPE, levels=c("Deposited", "Control")),
          IF_CLASS = factor(IF_CLASS, 
-                           levels=c("High IF", "Medium IF", "Low IF"))) %>%
+                           levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF"))) %>%
   ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN, group=TYPE)) +
   geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), 
               linetype=2, alpha=0.1) +
@@ -186,7 +186,8 @@ p1 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
   scale_color_manual(values=c("#2166AC", "#E69F00")) +
   xlab("Months after publication") +
   ylab(expression(italic("Cpp"))) +
-  theme(legend.position = c(0.13, 0.94), # manual shuffling of legend position
+  theme(legend.position = c(0.12, 0.95),
+        legend.margin=margin(c(2,2,2,2)),# manual shuffling of legend position
         legend.background = element_rect(fill="white", 
                                          size=0.2, 
                                          color="grey30", 
@@ -196,13 +197,13 @@ p1 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
                                          color="grey30", 
                                          linetype="solid"),
         strip.text.x=element_text(size=10, colour = "grey30"),
-        plot.margin = margin(0, 0, 0.2, 1, "cm")) +
+        plot.margin = margin(0, 0, 0.2, 0.82, "cm")) +
   facet_grid(rows=vars(IF_CLASS), scales="free")
 
 # Sample size at each monthly interval
 p2 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
   mutate(IF_CLASS = factor(IF_CLASS, 
-                           levels=c("High IF", "Medium IF", "Low IF"))) %>%
+                           levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF"))) %>%
   ggplot(aes(x=CITATION_INTERVAL, y=N/2)) +
   geom_bar(aes(fill=IF_CLASS), stat="identity") +
   scale_x_continuous(limits=c(-1, 37), breaks = c(0, 6, 12, 18, 24, 30, 36)) +
@@ -210,13 +211,14 @@ p2 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
   coord_cartesian(xlim=c(0,36)) +
   xlab("Months after publication") +
   ylab("Sample size") +
-  theme(legend.position = c(0.75, 0.7),
+  theme(legend.position = c(0.75, 0.75),
+        legend.margin=margin(c(2,2,2,2)),
         legend.direction = "horizontal",
         legend.background = element_rect(fill="white", 
                                          size=0.2, 
                                          color="grey30", 
                                          linetype="solid"),
-        plot.margin = margin(0.2, 0.6, 0, 0.8, "cm"), # Manual alignment
+        plot.margin = margin(0.2, 0.6, 0, 0.8, "cm"), # Manual shuffling of legend position
         panel.grid.minor = element_blank())
 
 plot <- ggarrange(p1, p2, labels = c("A", "B"), 
@@ -409,7 +411,7 @@ rm(p1, p2, p3, p4, p5, p6, plot, article_altmetrics)
 
 altmetrics_IF <- read_csv("data/analysis/article_altmetrics_IF_summary.csv") %>%
   mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control")),
-         IF_CLASS=factor(IF_CLASS, levels=c("High IF", "Medium IF", "Low IF")))
+         IF_CLASS=factor(IF_CLASS, levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF")))
 
 p1 <- altmetrics_IF %>%
   ggplot(aes(x=TYPE, y=PCT_HAS_ALTMETRIC, fill=TYPE)) +

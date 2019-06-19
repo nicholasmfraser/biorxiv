@@ -964,4 +964,3 @@ write.csv(last_author_gender,
 
 ```
 
-
