@@ -1,6 +1,6 @@
 # The effect of bioRxiv preprints on citations and altmetrics
 
-This repository contains code and data for the study entitled **The effect of bioRxiv preprints on citations and altmetrics**. A preprint of this manuscript is available on bioRxiv, here: [**add link**](#)
+This repository contains code and data for the study entitled **The effect of bioRxiv preprints on citations and altmetrics**. A preprint of this manuscript is available on bioRxiv, here: [**The effect of bioRxiv preprints on citations and altmetrics**](https://www.biorxiv.org/content/10.1101/673665v1.article-metrics)
 
 ## Background
 

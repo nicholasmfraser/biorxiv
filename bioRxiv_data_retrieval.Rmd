@@ -721,9 +721,16 @@ Impact factors are calculated directly from Scopus data
 
 ```{r}
 
+# Take a two-step approach: first, find the journals within our bioRxiv articles,
+# and extract all articles published within those journals for our analsis period.
+# Then retrieve the total number of published items per journal per year, 
+# and the total number of citations to those articles over the following two years,
+# and calculate respective IF
+
 # Open DB connection
 con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
+items_for_IF <- sqlQuery(con, read_file("sql/items_for_IF.sql"))
 impact_factors <- as_tibble(sqlQuery(con, read_file("sql/impact_factors.sql")))
 
 # Close DB connection
