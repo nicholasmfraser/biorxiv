@@ -1,6 +1,5 @@
 ---
 title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv figures"
-output: html_notebook
 ---
 
 ### Initial Configuration
@@ -56,12 +55,18 @@ png("outputs/figures/fig_1_matching_overlap.png",
 fit <- deframe(read_csv("data/analysis/matching_overlap.csv"))
 
 # Plot Venn diagram
-plot(euler(fit), 
+#plot(euler(fit), 
+#     labels=c("Crossref", "bioRxiv", "Scopus"), 
+#     quantities=TRUE, 
+#     fill = c("#993366", "#2166AC", "#E69F00"),
+#     alpha = 0.5,
+#     cex = 2)
+
+plot(venn(fit), 
      labels=c("Crossref", "bioRxiv", "Scopus"), 
-     quantities=TRUE, 
      fill = c("#993366", "#2166AC", "#E69F00"),
-     alpha = 0.5,
-     cex = 2)
+     color = '#000000',
+     alpha = 0.5)
 
 dev.off()
 
@@ -76,7 +81,7 @@ rm(fit)
 # Number of preprints deposited over time
 p1 <- read_csv("data/analysis/monthly_preprints.csv") %>%
   ggplot(aes(x=YEAR_MON, y=DEPOSITED)) +
-  geom_bar(stat="identity") + 
+  geom_bar(stat="identity", color="black", fill="grey", lwd=0.25) + 
   labs(x = "", y="Preprints\nDeposited") +
   theme(panel.spacing.x = unit(0, "cm"), # plot facet panels together
         axis.text.x = element_blank()) + # hide months from x-axis)
@@ -85,7 +90,7 @@ p1 <- read_csv("data/analysis/monthly_preprints.csv") %>%
 # Percentage of preprints published over time
 p2 <- read_csv("data/analysis/monthly_preprints.csv") %>%
   ggplot(aes(x=YEAR_MON, y=PCT_PUBLISHED)) +
-  geom_bar(stat="identity") + 
+  geom_bar(stat="identity", color="black", fill="grey", lwd=0.25) + 
   labs(x = "", y="Percentage\nPublished") +
   lims(y=c(0,100)) +
   theme(panel.spacing.x = unit(0, "cm"), # plot facet panels together
@@ -110,139 +115,96 @@ rm(p1, p2, plot)
 
 ### Figure 3: Monthly citation rates of bioRxiv-deposited and control articles
 
-```{r results='hide'}
+```{r}
 
-# Comparing average monthly CPP of bioRxiv-deposited and control articles
-p1 <- read_csv("data/analysis/monthly_articles_cpp.csv") %>%
-  mutate(TYPE = factor(TYPE, levels=c("Deposited", "Control"))) %>%
-  ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN, group=TYPE)) +
-   geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), 
-               linetype=2, alpha=0.1) +
-  geom_line(aes(colour=TYPE), size=0.5) +
-  geom_point(aes(colour=TYPE), shape=21, size=1, stroke=0.75, fill="white")  +
-  scale_x_continuous(breaks = c(0, 6, 12, 18, 24, 30, 36), position="top") +
-  coord_cartesian(ylim=c(0,0.6), xlim=c(0,36)) +
+d <- read_csv("data/analysis/article_monthly_citations.csv") %>%
+  mutate(TYPE = factor(TYPE, levels=c("Deposited", "Control")))
+
+p1 <- d %>%
+  group_by(TYPE, CITATION_INTERVAL) %>%
+  summarize(CPP_MEAN = mean(LOG_CITATIONS),
+            CPP_95CI = qnorm(0.975)*sd(LOG_CITATIONS)/sqrt(n())) %>%
+  ggplot(aes(x=CITATION_INTERVAL, group=TYPE)) +
+  geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), fill="grey", alpha=0.3) +
+  geom_line(aes(y=CPP_MEAN, color=TYPE)) +
+  geom_point(aes(y=CPP_MEAN, fill=TYPE, color=TYPE)) +
+  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
   scale_color_manual(values=c("#2166AC", "#E69F00")) +
-  xlab("Months after publication") +
+  coord_cartesian(xlim=c(0,36), ylim=c(0,0.6)) +
+  scale_x_continuous(breaks=c(0,6,12,18,24,30,36), position="top") +
+  xlab("Months after preprint deposit") +
   ylab(expression(italic("Cpp"))) +
-  theme(legend.position = c(0.13, 0.9),
-        legend.background = element_rect(fill="white", 
-                                         size=0.2, 
-                                         color="grey30", 
-                                         linetype="solid"),
-        legend.direction = "horizontal")
-
-# Sample size at each monthly interval
-p2 <- read_csv("data/analysis/monthly_articles_cpp.csv") %>%
-  ggplot(aes(x=CITATION_INTERVAL, y=N/2)) +
-  geom_bar(stat="identity") +
-  scale_x_continuous(limits=c(-1, 37), breaks = c(0, 6, 12, 18, 24, 30, 36)) +
-  scale_y_continuous(breaks = c(0, 2000, 4000, 6000)) +
-  coord_cartesian(xlim=c(0,36)) +
-  xlab("Months after publication") +
-  ylab("Sample size") +
-  theme(plot.margin = margin(0, 0, 0, 1, "cm"),
-        panel.grid.minor = element_blank())
-
-# Combine plots
-plot <- ggarrange(p1, p2, labels = c("A", "B"), 
-                  ncol = 1, nrow = 2, align="v", heights=c(2,1))
-
-# Save    
-ggsave("outputs/figures/fig_3_monthly_articles_cpp.png", 
-       plot, 
-       width=width, 
-       height=height_med, 
-       units="cm", 
-       dpi=resolution)
-
-# Remove redundant variables
-rm(p1, p2, plot)
-
-```
-
-### Figure 4: Monthly citation rates of bioRxiv-deposited and control articles in IF categories
-
-```{r results='hide'}
-
-# Average monthly CPP of bioRxiv-deposited and non-deposited articles, grouped
-# by calculated IFs
-p1 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
-  mutate(TYPE = factor(TYPE, levels=c("Deposited", "Control")),
-         IF_CLASS = factor(IF_CLASS, 
-                           levels=c("High IF", 
-                                    "Med-High IF", 
-                                    "Med-Low IF", 
-                                    "Low IF"))) %>%
-  ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN, group=TYPE)) +
-  geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), 
-              linetype=2, alpha=0.1) +
-  geom_line(aes(colour=TYPE), size=0.5) +
-  geom_point(aes(colour=TYPE), shape=21, size=1, stroke=0.75, fill="white") +
-  scale_x_continuous(breaks = c(0, 6, 12, 18, 24, 30, 36), 
-                     position="top") +
-  coord_cartesian(xlim=c(0,36)) +
-  expand_limits(y=0) +
-  scale_color_manual(values=c("#2166AC", "#E69F00")) +
-  xlab("Months after publication") +
-  ylab(expression(italic("Cpp"))) +
-  theme(legend.position = c(0.12, 0.95),
-        legend.margin=margin(c(2,2,2,2)),# manual shuffling of legend position
+  theme(legend.position = c(0.15, 0.85), # manual shuffling
         legend.background = element_rect(fill="white", 
                                          size=0.2, 
                                          color="grey30", 
                                          linetype="solid"),
         legend.direction = "horizontal",
-        strip.background = element_rect(fill="white", 
-                                         color="grey30", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=10, colour = "grey30"),
-        plot.margin = margin(0, 0, 0.2, 0.82, "cm")) +
-  facet_grid(rows=vars(IF_CLASS), scales="free")
+        plot.margin = margin(0,0,0.75,1,"cm"))
 
-# Sample size at each monthly interval
-p2 <- read_csv("data/analysis/monthly_articles_cpp_IF.csv") %>%
-  mutate(IF_CLASS = factor(IF_CLASS, 
-                           levels=c("High IF", "Med-High IF", "Med-Low IF", "Low IF"))) %>%
-  ggplot(aes(x=CITATION_INTERVAL, y=N/2)) +
-  geom_bar(aes(fill=IF_CLASS), stat="identity") +
-  scale_x_continuous(limits=c(-1, 37), breaks = c(0, 6, 12, 18, 24, 30, 36)) +
-  scale_y_continuous(breaks = c(0, 2000, 4000, 6000)) +
+p2 <- d %>%
+  group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
+  arrange(TYPE) %>%
+  summarize(PAIRED_DIFFERENCE = (LOG_CITATIONS[1]-LOG_CITATIONS[2])) %>%
+  ungroup() %>%
+  group_by(CITATION_INTERVAL) %>%
+  summarize(DIFF_MEAN = mean(PAIRED_DIFFERENCE),
+            DIFF_95CI = qnorm(0.975)*sd(PAIRED_DIFFERENCE)/sqrt(n())) %>%
+  ungroup() %>%
+  ggplot(aes(x=as.numeric(CITATION_INTERVAL))) +
+  geom_line(aes(y=DIFF_MEAN)) +
+  geom_point(aes(y=DIFF_MEAN)) +
+  geom_ribbon(aes(ymin=DIFF_MEAN-DIFF_95CI, ymax=DIFF_MEAN+DIFF_95CI), alpha=0.1) +
+  geom_hline(yintercept = 0, linetype="dashed", colour="black", lwd=0.25) +
+  coord_cartesian(xlim=c(0,36), ylim=c(-0.3, 0.3)) +
+  scale_x_continuous(breaks=c(0,6,12,18,24,30,36)) +
+  xlab("") +
+  ylab(expression(Delta~italic("Cpp")["paired"])) +
+  theme(axis.text.x = element_blank(),
+        plot.margin = margin(0,0,0,1,"cm"))
+
+p3 <- d %>%
+  filter(TYPE == "Deposited") %>%
+  group_by(CITATION_INTERVAL) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(x=CITATION_INTERVAL, y=n)) +
+  geom_bar(stat="identity", fill="grey", color="black", lwd=0.25) +
   coord_cartesian(xlim=c(0,36)) +
+  scale_x_continuous(breaks=c(0,6,12,18,24,30,36)) +
+  scale_y_continuous(breaks = c(0, 2000, 4000, 6000)) +
   xlab("Months after publication") +
   ylab("Sample size") +
-  theme(legend.position = c(0.75, 0.75),
-        legend.margin=margin(c(2,2,2,2)),
-        legend.direction = "horizontal",
-        legend.background = element_rect(fill="white", 
-                                         size=0.2, 
-                                         color="grey30", 
-                                         linetype="solid"),
-        plot.margin = margin(0.2, 0.6, 0, 0.8, "cm"), # Manual shuffling of legend position
-        panel.grid.minor = element_blank())
+  theme(panel.grid.minor = element_blank(),
+        plot.margin = margin(0,0,0,1,"cm"))
 
-# Arrange panels
-plot <- ggarrange(p1, p2, labels = c("A", "B"), 
-                  ncol = 1, nrow = 2, align="v", heights=c(3,1))
+plot <- ggarrange(p1, p2, p3, labels = c("A", "B", "C"),
+                  ncol = 1, nrow = 3, align="v", heights=c(1.8,1.5,1)) #manual shuffling
 
-# Save plot    
-ggsave("outputs/figures/fig_4_monthly_articles_cpp_IF.png", 
-       plot, 
+ggsave("outputs/figures/fig_3_monthly_articles_citations.png", 
+       plot,
        width=width, 
        height=height_large, 
        units="cm", 
        dpi=resolution)
+
 ```
 
-### Figure 5: Monthly citation rates for published and unpublished preprints
+### Figure 4: Monthly citation rates for published and unpublished preprints
 
-```{r results='hide'}
+```{r}
 
-# Monthly Cpp for published and unpublished preprints
-p1 <- read_csv("data/analysis/monthly_preprints_cpp.csv") %>%
+# Read data
+d <- read_csv("data/analysis/all_preprints_monthly_citations.csv") 
+
+# Monthly citations rates of published and unpublished preprints
+p1 <- d %>%
+  group_by(IS_PUBLISHED, CITATION_INTERVAL) %>%
+  summarize(
+    CPP_MEAN = mean(LOG_CITATIONS),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATIONS)/sqrt(n())
+  ) %>% 
   ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN, group=IS_PUBLISHED)) +
-  geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), 
-              linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), linetype=2, alpha=0.1) +
   geom_line(aes(colour=IS_PUBLISHED), size=0.5) +
   geom_point(aes(colour=IS_PUBLISHED), shape=21, size=1, stroke=0.75, fill="white")  +
   scale_x_continuous(limits=c(0, 36), 
@@ -252,15 +214,19 @@ p1 <- read_csv("data/analysis/monthly_preprints_cpp.csv") %>%
   scale_color_manual(values=c("#2166AC", "#E69F00")) +
   xlab("Months after preprint deposit") +
   ylab(expression(italic("Cpp"))) +
-  theme(legend.position = c(0.15, 0.9),
+  theme(legend.position = c(0.18, 0.9),
         legend.background = element_rect(fill="white", 
                                          size=0.2, 
                                          color="grey30", 
                                          linetype="solid"),
         legend.direction = "horizontal")
-
-# Sample size at each monthly interval
-p2 <- read_csv("data/analysis/monthly_preprints_cpp.csv") %>%
+  
+# Sample size for each group at each time interval
+p2 <- d %>%
+  group_by(IS_PUBLISHED, CITATION_INTERVAL) %>%
+  summarize(
+    N = n()
+  ) %>% 
   ggplot(aes(x=CITATION_INTERVAL, y=N)) +
   geom_bar(aes(fill=IS_PUBLISHED), stat="identity") +
   scale_x_continuous(limits=c(-1, 25), breaks = c(0, 6, 12, 18, 24)) +
@@ -271,7 +237,7 @@ p2 <- read_csv("data/analysis/monthly_preprints_cpp.csv") %>%
   ylab("Sample size") +
   theme(plot.margin = margin(0, 0, 0, 1, "cm"),
         panel.grid.minor = element_blank(),
-        legend.position = c(0.85, 0.75),
+        legend.position = c(0.82, 0.75),
         legend.background = element_rect(fill="white", 
                                          size=0.2, 
                                          color="grey30", 
@@ -283,7 +249,7 @@ plot <- ggarrange(p1, p2, labels = c("A", "B"),
                   ncol = 1, nrow = 2, align="v", heights=c(2,1))
 
 # Save plot
-ggsave("outputs/figures/fig_5_monthly_preprints_cpp.png", 
+ggsave("outputs/figures/fig_4_monthly_preprints_cpp.png", 
        plot, 
        width=width, 
        height=height_med,
@@ -294,12 +260,20 @@ rm(p1, p2, plot)
 
 ```
 
-### Figure 6: Monthly citation rates for preprints as a function of time before/after journal publication
+### Figure 5: Monthly citation rates for preprints as a function of time before/after journal publication
 
-```{r results='hide'}
+```{r}
 
-# Monthly Cpp of preprints.
-p1 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
+# Read data
+d <- read_csv("data/analysis/published_preprints_monthly_citations.csv") 
+
+# Monthly citation rates for preprints as a function of journal article publication data
+p1 <- d %>%
+  group_by(CITATION_INTERVAL) %>%
+  summarize(
+    CPP_MEAN = mean(LOG_CITATIONS),
+    CPP_95CI = qnorm(0.975)*sd(LOG_CITATIONS)/sqrt(n())
+  ) %>% 
   ggplot(aes(x=CITATION_INTERVAL, y=CPP_MEAN)) +
   geom_ribbon(aes(ymin=CPP_MEAN-CPP_95CI, ymax=CPP_MEAN+CPP_95CI), linetype=2, alpha=0.1) +
   geom_line(size=0.5) +
@@ -310,9 +284,13 @@ p1 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
   ylab(expression(italic("Cpp"))) +
   scale_x_continuous(limits=c(-12, 24), breaks = c(-12, -6, 0, 6, 12, 18, 24), position="top") +
   coord_cartesian(ylim=c(0,0.03))
-
-# Sample size at each
-p2 <- read_csv("data/analysis/monthly_published_preprints_cpp.csv") %>%
+  
+# Sample size at each time interval
+p2 <- d %>%
+  group_by(CITATION_INTERVAL) %>%
+  summarize(
+    N = n()
+  ) %>% 
   ggplot(aes(x=CITATION_INTERVAL, y=N)) +
   geom_bar(stat="identity") +
   scale_x_continuous(limits=c(-13, 25), breaks = c(-12, -6, 0, 6, 12, 18, 24)) +
@@ -328,7 +306,7 @@ plot <- ggarrange(p1, p2, labels = c("A", "B"),
                   ncol = 1, nrow = 2, align="v", heights=c(2,1))
 
 # Save plot
-ggsave("outputs/figures/fig_6_monthly_published_preprints_cpp.png", 
+ggsave("outputs/figures/fig_5_monthly_published_preprints_cpp.png", 
        plot, 
        width=width, 
        height=height_med, 
@@ -339,207 +317,141 @@ rm(p1, p2, plot)
 
 ```
 
-
-### Figure 7: Altmetrics of preprints, bioRxiv-deposited and control articles
+### Figure 6: Altmetrics of preprints, bioRxiv-deposited and control articles
 
 ```{r results='hide'}
 
-# Read altmetrics data for preprints and journal articles
-altmetrics <- read_csv("data/analysis/article_altmetrics_summary.csv") %>%
-  bind_rows(read_csv("data/analysis/preprint_altmetrics_summary.csv")) %>%
-  mutate(TYPE=factor(TYPE, levels=c("Preprint", "Deposited", "Control")))
+preprint_altmetrics <- read_csv("data/raw/preprint_altmetrics.csv") %>%
+  mutate(TYPE="Preprint") 
+
+article_altmetrics <- read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(select(read_csv("data/analysis/article_characteristics.csv"), 
+                    PREPRINT_DOI, ARTICLE_DOI, TYPE), 
+             by=c("PREPRINT_DOI", "ARTICLE_DOI"))
+
+d <- bind_rows(preprint_altmetrics, article_altmetrics) %>%
+  mutate(TYPE = factor(TYPE, levels=c("Preprint", "Deposited", "Control")))
 
 # Altmetrics coverage
-p1 <- altmetrics %>%
+p1 <- d %>%
+  group_by(TYPE) %>%
+  summarize(PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100) %>%
   ggplot(aes(x=TYPE, y=PCT_HAS_ALTMETRIC, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  xlab("% with altmetrics") +
-  ylab("") +
+  xlab("Altmetrics Coverage") +
+  ylab("%") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
 # Mean tweets
-p2 <- altmetrics %>%
+p2 <- d %>%
+  group_by(TYPE) %>%
+  summarize(TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
+            TWEETS_95CI = qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(n())) %>%
   ggplot(aes(x=TYPE, y=TWEETS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=TWEETS_MEAN-TWEETS_95CI, ymax=TWEETS_MEAN+TWEETS_95CI), 
                 width=.2, position=position_dodge(.9)) +
   xlab("Twitter") +
-  ylab("") +
+  ylab("Mean Log-Counts") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
-# Meanblog  mentions
-p3 <- altmetrics %>%
+# Mean blog  mentions
+p3 <- d %>%
+  group_by(TYPE) %>%
+  summarize(FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
+            FEEDS_95CI = qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(n())) %>%
   ggplot(aes(x=TYPE, y=FEEDS_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=FEEDS_MEAN-FEEDS_95CI, ymax=FEEDS_MEAN+FEEDS_95CI), 
                 width=.2, position=position_dodge(.9)) +
   xlab("Blogs") +
-  ylab("") +
+  ylab("Mean Log-Counts") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
 # Mean mainstream media mentions
-p4 <- altmetrics %>%
+p4 <- d %>%
+  group_by(TYPE) %>%
+  summarize(MSM_MEAN = mean(log(ALT_MSM+1)),
+            MSM_95CI = qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(n())) %>%
   ggplot(aes(x=TYPE, y=MSM_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=MSM_MEAN-MSM_95CI, ymax=MSM_MEAN+MSM_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("News articles") +
-  ylab("") +
+  xlab("News") +
+  ylab("Mean Log-Counts") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
 # Mean wikipedia mentions
-p5 <- altmetrics %>%
+p5 <- d %>%
+  group_by(TYPE) %>%
+  summarize(WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
+            WIKIPEDIA_95CI = qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(n())) %>%
   ggplot(aes(x=TYPE, y=WIKIPEDIA_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=WIKIPEDIA_MEAN-WIKIPEDIA_95CI, ymax=WIKIPEDIA_MEAN+WIKIPEDIA_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Wikipedia mentions") +
-  ylab("") +
+  xlab("Wikipedia") +
+  ylab("Mean Log-Counts") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
 # Mean Mendeley reads
-p6 <- altmetrics %>%
+p6 <- d %>%
+  group_by(TYPE) %>%
+  summarize(MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
+            MENDELEY_95CI = qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(n())) %>%
   ggplot(aes(x=TYPE, y=MENDELEY_MEAN, fill=TYPE)) +
   geom_bar(colour="black", stat="identity", position=position_dodge()) +
   geom_errorbar(aes(ymin=MENDELEY_MEAN-MENDELEY_95CI, ymax=MENDELEY_MEAN+MENDELEY_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Mendeley reads") +
-  ylab("") +
+  xlab("Mendeley") +
+  ylab("Mean Log-Counts") +
   scale_fill_manual(values=c("#993366", "#2166AC", "#E69F00")) +
   theme(axis.text.x = element_blank())
 
+# Paired altmetric indicators
+p7 <- d %>% filter(TYPE %in% c("Deposited", "Control")) %>%
+  select(PREPRINT_DOI, TYPE, ALT_TWEETS, ALT_FEEDS, ALT_MSM, ALT_WIKIPEDIA, ALT_MENDELEY) %>%
+  gather(key="INDICATOR", value="VALUE", -PREPRINT_DOI, -TYPE) %>%
+  group_by(PREPRINT_DOI, INDICATOR) %>%
+  arrange(TYPE) %>%
+  mutate(PAIRED_DIFFERENCE = log(VALUE[1]+1)-log(VALUE[2]+1)) %>%
+  ungroup() %>%
+  group_by(INDICATOR) %>%
+  summarize(DIFF_MEAN = mean(PAIRED_DIFFERENCE),
+            DIFF_95CI = qnorm(0.975)*sd(PAIRED_DIFFERENCE)/sqrt(n())) %>%
+  mutate(INDICATOR =case_when(
+    INDICATOR == "ALT_FEEDS" ~ "Blogs",
+    INDICATOR == "ALT_MENDELEY" ~ "Mendeley",
+    INDICATOR == "ALT_TWEETS" ~ "Twitter",
+    INDICATOR == "ALT_MSM" ~ "News",
+    INDICATOR == "ALT_WIKIPEDIA" ~ "Wikipedia"
+  )) %>%
+  mutate(INDICATOR = factor(INDICATOR, levels=c("Twitter", "Blogs", "News", "Wikipedia", "Mendeley"))) %>%
+  ggplot(aes(x=INDICATOR, y=DIFF_MEAN)) +
+  geom_bar(colour="black", fill="grey", stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=DIFF_MEAN-DIFF_95CI, ymax=DIFF_MEAN+DIFF_95CI), width=.2, position=position_dodge(.9)) +
+  geom_hline(yintercept=0, color="black", linetype="dashed", lwd=0.25) +
+  coord_cartesian(ylim=c(-1,1)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  xlab("") +
+  ylab(expression(Delta~italic("Log-Counts")["paired"])) +
+  theme(plot.margin = margin(2, 1, 0, 1, "cm"))
+  
 # Arrange panels
-plot <- ggarrange(p1, p2, p3, p4, p5, p6, labels=c("A", "B", "C", "D", "E", "F"),
-                  ncol = 6, nrow = 1, align="h", common.legend = TRUE, legend="top")
+plot <- ggarrange(p1, p2, p3, p4, p5, p6, ncol = 3, nrow = 2, align="hv", common.legend = TRUE, legend="top")
+
+plot_full <- ggarrange(plot, p7, labels=c("A", "B"), ncol=2, nrow=1, widths=c(1.5,1))
 
 # Save plot
-ggsave("outputs/figures/fig_7_altmetrics_summary.png", 
-       plot,
+ggsave("outputs/figures/fig_6_altmetrics_summary.png", 
+       plot_full,
        width=width*1.5, 
        height=height_med, 
        units="cm", 
        dpi=resolution)
 
-rm(p1, p2, p3, p4, p5, p6, plot, article_altmetrics)
-
-```
-
-### Figure 8: Altmetrics of bioRxiv-deposited and control articles in IF categories
-
-```{r results='hide'}
-
-# Read data
-altmetrics_IF <- read_csv("data/analysis/article_altmetrics_IF_summary.csv") %>%
-  mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control")),
-         IF_CLASS=factor(IF_CLASS, levels=c("High IF", 
-                                            "Med-High IF", 
-                                            "Med-Low IF", 
-                                            "Low IF")))
-
-# Mean coverage
-p1 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=PCT_HAS_ALTMETRIC, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  xlab("% with altmetrics") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30")) +
-  facet_grid(rows=vars(IF_CLASS))
-
-# Mean tweets
-p2 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=TWEETS_MEAN, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  geom_errorbar(aes(ymin=TWEETS_MEAN-TWEETS_95CI, ymax=TWEETS_MEAN+TWEETS_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Twitter") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30")) +
-  facet_grid(rows=vars(IF_CLASS))
-
-# Mean blog mentions
-p3 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=FEEDS_MEAN, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  geom_errorbar(aes(ymin=FEEDS_MEAN-FEEDS_95CI, ymax=FEEDS_MEAN+FEEDS_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Blogs") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30"))+
-  facet_grid(rows=vars(IF_CLASS))
-
-# Mean mainstream media mentions
-p4 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=MSM_MEAN, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  geom_errorbar(aes(ymin=MSM_MEAN-MSM_95CI, ymax=MSM_MEAN+MSM_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("News articles") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30"))+
-  facet_grid(rows=vars(IF_CLASS))
-
-# Mean Wikipedia mentions
-p5 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=WIKIPEDIA_MEAN, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  geom_errorbar(aes(ymin=WIKIPEDIA_MEAN-WIKIPEDIA_95CI, ymax=WIKIPEDIA_MEAN+WIKIPEDIA_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Wikipedia mentions") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30"))+
-  facet_grid(rows=vars(IF_CLASS))
-
-# Mean Mendeley reads
-p6 <- altmetrics_IF %>%
-  ggplot(aes(x=TYPE, y=MENDELEY_MEAN, fill=TYPE)) +
-  geom_bar(colour="black", stat="identity", position=position_dodge()) +
-  geom_errorbar(aes(ymin=MENDELEY_MEAN-MENDELEY_95CI, ymax=MENDELEY_MEAN+MENDELEY_95CI), width=.2, position=position_dodge(.9)) +
-  xlab("Mendeley reads") +
-  ylab("") +
-  scale_fill_manual(values=c("#2166AC", "#E69F00")) +
-  theme(axis.text.x = element_blank(),
-        strip.background = element_rect(fill="white", 
-                                         color="white", 
-                                         linetype="solid"),
-        strip.text.x=element_text(size=8, colour = "grey30"))+
-  facet_grid(rows=vars(IF_CLASS))
-
-# Arrange panels
-plot <- ggarrange(p1, p2, p3, p4, p5, p6, labels=c("A", "B", "C", "D", "E", "F"),
-                  ncol = 6, nrow = 1, align="h", common.legend = TRUE, legend="top")
-
-# Save plot
-ggsave("outputs/figures/fig_8_altmetrics_IF_summary.png", 
-       plot, 
-       width=width*1.5, 
-       height=height_large, 
-       units="cm", 
-       dpi=resolution)
-
-rm(p1, p2, p3, p4, p5, p6, plot)
-
+rm(p1, p2, p3, p4, p5, p6, p7, plot, article_altmetrics)
 
 ```

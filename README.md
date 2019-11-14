@@ -14,9 +14,7 @@ All data retrieval, processing and visualisation steps were conducted in R, usin
 
 The repository is structured as follows:
 
-* The upper level directory contains R notebooks used for the main data retrieval, analysis and plotting functions used in this study. `bioRxiv_data_retrieval.Rmd` is used to extract data from the various sources listed above, and output raw data files. `bioRxiv_analysis.Rmd` is used to aggregate these raw data into useful datasets for plotting and analysis. `bioRxiv_figures.Rmd` is used to render figures displayed in the manuscript.
-
-* `data` contains all raw data files produced during our analysis. The `analysis` folder within contains aggregated datasets produced by `bioRxiv_analysis.Rmd`.
-
+* The upper level directory contains R notebooks used for the main data retrieval, analysis and plotting functions used in this study. `bioRxiv_data_retrieval.Rmd` documents the steps used to extract data from the various sources listed above, and output raw data files. `bioRxiv_data_aggregation.Rmd` documents steps to aggregate the raw data sets into more useful datasets for analysis, e.g. by aggregating citation counts at monthly intervals. `bioRxiv_analysis.Rmd` documents the main data analysis steps, including all regression analyses. `bioRxiv_figures.Rmd` is used to render figures displayed in the manuscript.
+* `data` contains all raw and aggregated data files (under the folder `analysis`) produced in the course of our study.
 * `sql` contains all SQL scripts used to retrieve data from our Scopus database.
 * `outputs/figures` contains all figures produced in the study, which are included in the manuscript.

@@ -9,7 +9,7 @@ INNER JOIN
 ON
     lower(t1.DOI) = t2.ARTICLE_DOI
     AND t1.PUBTYPE = 'J'
-    AND t1.DOCTYPE IN ('ar', 're')
+    AND t1.DOCTYPE IN ('ar')
     AND t1.PUBYEAR >= 2013
     AND t1.REF_CNT > 0
 INNER JOIN

@@ -1,9 +1,6 @@
 ---
 title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv analysis"
-output: html_notebook
 ---
-
-# Here we aggregate our raw datasets into useful datasets for analysis and figures
 
 ### Load libraries
 
@@ -11,6 +8,7 @@ output: html_notebook
 
 library(tidyverse)
 library(lubridate)
+library(lme4)
 
 ```
 
@@ -20,13 +18,13 @@ library(lubridate)
 
 # Load the preprint-published links for each methodology
 # Crossref relationshiop
-CR <- read_csv("data/preprints_published_articles_cr.csv") %>% 
+CR <- read_csv("data/raw/preprints_published_articles_cr.csv") %>% 
   pull(PREPRINT_DOI)
 # bioRxiv website
-BIO <- read_csv("data/preprints_published_articles_bio.csv") %>% 
+BIO <- read_csv("data/raw/preprints_published_articles_bio.csv") %>% 
   pull(PREPRINT_DOI)
 # Scopus fuzzy matching
-SCP <- read_csv("data/preprints_published_articles_scp.csv") %>% 
+SCP <- read_csv("data/raw/preprints_published_articles_scp.csv") %>% 
   pull(PREPRINT_DOI)
 
 # Calculate the intersection between all possible permutations
@@ -49,10 +47,7 @@ enframe(fit) %>%
   write_csv("data/analysis/matching_overlap.csv")
 
 # Remove redundant variables
-rm(preprints_published_articles_cr, 
-   preprints_published_articles_bio,
-   preprints_published_articles_scp,
-   CR_BIO_SCP, CR_BIo, CR_SCP, BIO_SCP, CR, BIO, SCP, fit)
+rm(CR_BIO_SCP, CR_BIO, CR_SCP, BIO_SCP, CR, BIO, SCP, fit)
 
 ```
 
@@ -62,10 +57,10 @@ rm(preprints_published_articles_cr,
 
 # Join preprints dataset to dataset of preprints-published article links.
 # Aggregate sample size and percentage published at year and month level
-read_csv("data/preprints.csv") %>%
+read_csv("data/raw/preprints.csv") %>%
   mutate(YEAR_MON = format(PREPRINT_POSTED_DATE, "%Y-%m"),
          YEAR = format(PREPRINT_POSTED_DATE, "%Y")) %>%
-  left_join(read_csv("data/preprints_published_articles.csv")) %>%
+  left_join(read_csv("data/raw/preprints_published_articles.csv")) %>%
   mutate(IS_PUBLISHED = case_when(
     is.na(ARTICLE_DOI) ~ 0,
     !is.na(ARTICLE_DOI) ~ 1
@@ -84,8 +79,8 @@ read_csv("data/preprints.csv") %>%
 
 # Join preprints and articles, calculate difference in dates between preprint
 # posted date and article published date
-read_csv("data/preprints.csv") %>%
-  inner_join(read_csv("data/articles.csv") %>% 
+read_csv("data/raw/preprints.csv") %>%
+  inner_join(read_csv("data/raw/articles.csv") %>% 
   filter(TYPE == "Deposited"), by="PREPRINT_DOI") %>%
   mutate(publication_time = interval(date(PREPRINT_POSTED_DATE),
                                      date(ARTICLE_CREATED_DATE)) %/% days(1)) %>%
@@ -99,689 +94,556 @@ read_csv("data/preprints.csv") %>%
 ```{r results='hide'}
 
 # Citations to bioRxiv-deposited articles
-read_csv("data/articles.csv") %>% 
+read_csv("data/raw/articles.csv") %>% 
   filter(TYPE == "Deposited") %>% 
-  inner_join(read_csv("data/citing_articles.csv"), 
+  inner_join(read_csv("data/raw/citing_articles.csv"), 
              by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
   summarise(n = n())
 
 # Citations to control articles
-read_csv("data/articles.csv") %>% 
+read_csv("data/raw/articles.csv") %>% 
   filter(TYPE == "Control") %>% 
-  inner_join(read_csv("data/citing_articles.csv"), 
+  inner_join(read_csv("data/raw/citing_articles.csv"), 
              by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
   summarise(n = n())
-
-```
-
-### Build dataset of article citations
-
-```{r}
-
-# Join articles data with citing articles data. For each article we calculate
-# the number of citations per month, up to its maximum citation interval. Where
-# no citations are found in a month, citation counts are zero.
-
-article_citations <- read_csv("data/articles.csv") %>%
-  # Join with citing articles
-  left_join(read_csv("data/citing_articles.csv"), 
-            by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
-  select(PREPRINT_DOI, 
-         ARTICLE_DOI,
-         SOURCETITLE,
-         ARTICLE_CREATED_DATE,
-         CITING_ARTICLE_CREATED_DATE, 
-         TYPE) %>%
-  mutate(
-    # Determine cited status of an article
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    # Calculate interval between publication and citation
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1),
-    # Calculate an articles maximum citation interval within our time period
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  # Expand data to include all article/interval combinations
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   ARTICLE_DOI,
-                   SOURCETITLE,
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   TYPE, 
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
-  # We only want to analyse up to the 36 month citation window
-  filter(CITATION_INTERVAL >= 0, 
-         CITATION_INTERVAL <= 36,
-         CITATION_INTERVAL <= MAX_CITATION_INTERVAL)
-
-```
-
-### How have citation rates of bioRxiv-deposited and control articles evolved over time?
-
-```{r results='hide'}
-
-# Calculate average citation rates per group per month. Citation counts are 
-# log transformed prior to taking the mean and 95% conf. intervals.
-
-article_citations %>%
-  group_by(PREPRINT_DOI, TYPE, CITATION_INTERVAL) %>%
-  # Calculate summary statistics
-  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
-  ungroup() %>%
-  group_by(TYPE, CITATION_INTERVAL) %>%
-  summarize(
-    N = n(),
-    CPP_MEAN = mean(LOG_CITATION_CNT),
-    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
-  ) %>%
-  write_csv(path="data/analysis/monthly_articles_cpp.csv")
-
-```
-
-### What is the relationship between citation rates and impact factors?
-
-```{r}
-
-# Retrieve IF quartiles
-
-IF <- read_csv("data/articles.csv") %>%
-  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
-  inner_join(read_csv("data/impact_factors.csv"), 
-             by=c("SOURCETITLE", "YEAR")) %>%
-  pull(IF)
-
-IF_Q1 <- quantile(IF, 0.25)
-IF_Q2 <- quantile(IF, 0.5)
-IF_Q3 <- quantile(IF, 0.75)
-
-```
-
-
-```{r results='hide'}
-
-# Calculate average citation rates per group per month, further subdivided
-# into IF quartiles, by joining with IF data on both the sourcetitle and year
-
-article_citations %>%
-  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
-  inner_join(read_csv("data/impact_factors.csv"), 
-             by=c("SOURCETITLE", "YEAR")) %>%
-  # Categorise into high, medium and low IF classes. 
-  # High = upper IF quartile (~7), low = lower IF quartile (~3.3)
-  mutate(
-    IF_CLASS = case_when(
-      IF >= IF_Q3 ~ 'High IF',
-      IF < IF_Q3 & IF >= IF_Q2 ~ 'Med-High IF',
-      IF < IF_Q2 & IF >= IF_Q1  ~ 'Med-Low IF',
-      IF < IF_Q1 ~ 'Low IF'
-    )
-  ) %>%
-  group_by(PREPRINT_DOI, TYPE, IF_CLASS, CITATION_INTERVAL) %>%
-  # Calculate summary statistics
-  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
-  ungroup() %>%
-  group_by(TYPE, IF_CLASS, CITATION_INTERVAL) %>%
-  summarize(
-    N = n(),
-    CPP_MEAN = mean(LOG_CITATION_CNT),
-    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
-  ) %>%
-  write_csv(path="data/analysis/monthly_articles_cpp_IF.csv")
-
-```
-
-### How have citations to published and unpublished preprints evolved over time?
-
-```{r results='hide'}
-
-# Calculate citation intervals as a function of the time between preprint 
-# deposition and citing article publication date. Preprints are classified 
-# into those that have been published in a journal, and those that are not.
-
-# Read preprint data
-read_csv("data/preprints.csv") %>%
-  # Join articles
-  left_join(read_csv("data/articles.csv") %>% filter(TYPE=="Deposited"), 
-            by="PREPRINT_DOI") %>%
-  # Determine published status
-  mutate(
-    IS_PUBLISHED = case_when(
-      is.na(ARTICLE_DOI) ~ "Unpublished",
-      !is.na(ARTICLE_DOI) ~ "Published"
-    )
-  ) %>%
-  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, IS_PUBLISHED) %>%
-  # Join preprint citation data
-  left_join(select(read_csv("data/preprint_citing_articles.csv"), 
-                    PREPRINT_DOI, 
-                    CITING_ARTICLE_CREATED_DATE), 
-             by="PREPRINT_DOI") %>%
-  # Determine cited status
-  mutate(
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    # Calculate interval between publication and citation
-    CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                                 "months")) %/% months(1),
-    # Calculate an articles maximum citation interval within our time period
-    MAX_CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1)) %>%
-  # Expand data to include all article/interval combinations
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   PREPRINT_POSTED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   MAX_CITATION_INTERVAL,
-                   IS_PUBLISHED), 
-           fill=list(CITED = 0)) %>%
-  # Limit to 36 month citation window
-  filter(CITATION_INTERVAL >= 0, 
-         CITATION_INTERVAL <= 36,
-         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
-  group_by(PREPRINT_DOI, CITATION_INTERVAL, IS_PUBLISHED) %>%
-  # Calculate summary statistics
-  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
-  ungroup() %>%
-  group_by(IS_PUBLISHED, CITATION_INTERVAL) %>%
-  summarize(
-    N = n(),
-    CPP_MEAN = mean(LOG_CITATION_CNT),
-    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
-  ) %>% write_csv(path="data/analysis/monthly_preprints_cpp.csv")
-
-```
-
-### How are citations to preprints distributed with respect to the journal publication time?
-
-```{r results='hide'}
-
-# Join preprint data to articles data, and calculate citation intervals as a
-# function of the time between the citing article created date and the 
-# publication date of the journal article associated with the preprint
-
-# Read preprint data
-preprint_published_citations <- read_csv("data/preprints.csv") %>%
-  # Join articles
-  inner_join(read_csv("data/articles.csv"), by="PREPRINT_DOI") %>%
-  filter(TYPE == "Deposited") %>%
-  # Join preprint citation data
-  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, ARTICLE_CREATED_DATE) %>%
-  left_join(select(read_csv("data/preprint_citing_articles.csv"), 
-                    PREPRINT_DOI, 
-                    CITING_ARTICLE_CREATED_DATE), 
-             by="PREPRINT_DOI") %>%
-  # Determine cited status
-  mutate(
-    CITED = case_when(
-      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
-      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
-    ),
-    # Calculate interval between preprint deposition and journal article publication
-    MIN_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"), 
-                                     floor_date(date(PREPRINT_POSTED_DATE), 
-                                                "months")) %/% months(1),
-    # Calculate maximum potential citation interval
-    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                                "months"),
-                                     floor_date(date("2017-12-01"), 
-                                                "months")) %/% months(1),
-    # Calculate interval between publication and citation
-    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
-                                            "months"),
-                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
-                                            "months")) %/% months(1)) %>%
-  # Expand data to include all article/interval combinations
-  complete(CITATION_INTERVAL, 
-           nesting(PREPRINT_DOI, 
-                   PREPRINT_POSTED_DATE, 
-                   ARTICLE_CREATED_DATE, 
-                   CITING_ARTICLE_CREATED_DATE,
-                   MIN_CITATION_INTERVAL, 
-                   MAX_CITATION_INTERVAL), 
-           fill=list(CITED = 0)) %>%
-  # Limit citation interval to 12 months prior to, and 24 months following publication
-  filter(CITATION_INTERVAL >= -12, 
-         CITATION_INTERVAL <= 24,
-         CITATION_INTERVAL <= MAX_CITATION_INTERVAL,
-         CITATION_INTERVAL >= MIN_CITATION_INTERVAL) %>%
-  # Calculate summary statistics
-  group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
-  summarize(LOG_CITATION_CNT = log(sum(CITED)+1)) %>%
-  ungroup() %>%
-  group_by(CITATION_INTERVAL) %>%
-  summarize(
-    N = n(),
-    CPP_MEAN = mean(LOG_CITATION_CNT),
-    CPP_95CI = qnorm(0.975)*sd(LOG_CITATION_CNT)/sqrt(n())
-  ) %>% 
-  write_csv(path="data/analysis/monthly_published_preprints_cpp.csv")
-
-```
-
-### How do altmetrics differ between bioRxiv-deposited articles, control articles and preprints?
-
-```{r results='hide'}
-
-# Calculate summary statistics for each altmetric indicator for bioRxiv and
-# control articles
-
-# Read article data
-read_csv("data/articles.csv") %>% 
-  # Join altmetrics data
-  inner_join(read_csv("data/article_altmetrics.csv"), 
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(TYPE=factor(TYPE, levels=c("Deposited", "Control"))) %>%
-  # Calculate summary statistics
-  group_by(TYPE) %>%
-  summarize(
-    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
-    TWEETS_N = length(log(ALT_TWEETS+1)),
-    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
-    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
-    FEEDS_N = length(log(ALT_FEEDS+1)),
-    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
-    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
-    MSM_N = length(log(ALT_MSM+1)),
-    MSM_MEAN = mean(log(ALT_MSM+1)),
-    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
-    POLICIES_N = length(log(ALT_POLICIES+1)),
-    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
-    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
-    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
-    MENDELEY_N = length(log(ALT_MENDELEY+1)),
-    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
-    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
-  write_csv("data/analysis/article_altmetrics_summary.csv")
-
-# Do the same for preprints
-
-# Read preprints altmetrics data
-read_csv("data/preprint_altmetrics.csv") %>%
-  mutate(TYPE = factor("Preprint")) %>%
-  # Calculate summary statistics
-  group_by(TYPE) %>%
-  summarize(
-    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
-    TWEETS_N = length(log(ALT_TWEETS+1)),
-    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
-    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
-    FEEDS_N = length(log(ALT_FEEDS+1)),
-    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
-    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
-    MSM_N = length(log(ALT_MSM+1)),
-    MSM_MEAN = mean(log(ALT_MSM+1)),
-    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
-    POLICIES_N = length(log(ALT_POLICIES+1)),
-    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
-    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
-    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
-    MENDELEY_N = length(log(ALT_MENDELEY+1)),
-    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
-    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
-  write_csv("data/analysis/preprint_altmetrics_summary.csv")
-
-```
-
-### What is the relationship between altmetrics and impact factors?
-
-```{r results='hide'}
-
-# Calculate summary statistics for each altmetric indicator for bioRxiv and
-# control articles, further subdivided by IF quartiles
-
-# Read article data
-read_csv("data/articles.csv") %>% 
-  # Join altmetrics data
-  inner_join(read_csv("data/article_altmetrics.csv"), 
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y")),
-         TYPE = factor(TYPE, levels=c("Deposited", "Control"))) %>%
-  # Join IF data on SOURCETITLE and Year
-  inner_join(read_csv("data/impact_factors.csv"), 
-             by=c("SOURCETITLE", "YEAR")) %>%
-  # Assign IF quartiles
-  mutate(
-    IF_CLASS = case_when(
-      IF >= IF_Q3 ~ 'High IF',
-      IF < IF_Q3 & IF >= IF_Q2 ~ 'Med-High IF',
-      IF < IF_Q2 & IF >= IF_Q1  ~ 'Med-Low IF',
-      IF < IF_Q1 ~ 'Low IF'
-    )
-  ) %>%
-  # Calculate summary statistics
-  group_by(IF_CLASS, TYPE) %>%
-  summarize(
-    PCT_HAS_ALTMETRIC = (sum(HAS_ALTMETRIC)/n())*100,
-    TWEETS_N = length(log(ALT_TWEETS+1)),
-    TWEETS_MEAN = mean(log(ALT_TWEETS+1)),
-    TWEETS_95CI =  qnorm(0.975)*sd(log(ALT_TWEETS+1))/sqrt(length(log(ALT_TWEETS+1))),
-    FEEDS_N = length(log(ALT_FEEDS+1)),
-    FEEDS_MEAN = mean(log(ALT_FEEDS+1)),
-    FEEDS_95CI =  qnorm(0.975)*sd(log(ALT_FEEDS+1))/sqrt(length(log(ALT_FEEDS+1))),
-    MSM_N = length(log(ALT_MSM+1)),
-    MSM_MEAN = mean(log(ALT_MSM+1)),
-    MSM_95CI =  qnorm(0.975)*sd(log(ALT_MSM+1))/sqrt(length(log(ALT_MSM+1))),
-    POLICIES_N = length(log(ALT_POLICIES+1)),
-    POLICIES_MEAN = mean(log(ALT_POLICIES+1)),
-    POLICIES_95CI =  qnorm(0.975)*sd(log(ALT_POLICIES+1))/sqrt(length(log(ALT_POLICIES+1))),
-    WIKIPEDIA_N = length(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_MEAN = mean(log(ALT_WIKIPEDIA+1)),
-    WIKIPEDIA_95CI =  qnorm(0.975)*sd(log(ALT_WIKIPEDIA+1))/sqrt(length(log(ALT_WIKIPEDIA+1))),
-    MENDELEY_N = length(log(ALT_MENDELEY+1)),
-    MENDELEY_MEAN = mean(log(ALT_MENDELEY+1)),
-    MENDELEY_95CI =  qnorm(0.975)*sd(log(ALT_MENDELEY+1))/sqrt(length(log(ALT_MENDELEY+1)))) %>%
-  write_csv("data/analysis/article_altmetrics_IF_summary.csv")
 
 ```
 
 # Regression Analysis ----------------------------------------------------------
 
-### Summary Dataset
+### Summary Characteristics
 
-Data from various extracted data sets are aggregated into a single summary dataframe:
+```{r}
 
-- Article metadata
-- Impact factors
-- OA status
-- Author countries
-- Author academic age
-- Gender
+# Build a summary table of each individual characteristic included in our regression model
+article_characteristics <- read_csv("data/analysis/article_characteristics.csv")
 
-```{r results='hide'}
-
-# Read article data
-summary <- read_csv("data/articles.csv") %>%
-  select(PREPRINT_DOI, ARTICLE_DOI, ARTICLE_CREATED_DATE,
-         SOURCETITLE, DOCTYPE, AUTHOR_CNT, TYPE) %>%
-  # Code deposition status for regression
-  mutate(
-    IS_DEPOSITED = case_when(
-      TYPE == "Deposited" ~ 1,
-      TYPE == "Control" ~ 0
-    )
-  ) %>%
-  # Code article type for regression
-  mutate(
-    IS_REVIEW = case_when(
-      DOCTYPE == 're' ~ 1,
-      DOCTYPE == 'ar' ~ 0
-    )
-  ) %>%
-  select(-DOCTYPE) %>%
-  # Join IF data by journal name and publication year
-  mutate(YEAR = as.numeric(format(ARTICLE_CREATED_DATE, "%Y"))) %>%
-  left_join(., read_csv("data/impact_factors.csv"),
-             by=c("SOURCETITLE", "YEAR")) %>%
-  select(-YEAR) %>%
-  # Join OA status
-  inner_join(., read_csv("data/article_oa_status.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  select(-JOURNAL_IS_OA) %>%
-  mutate(IS_OA = as.numeric(IS_OA)) %>%
-  # Join first author countries. Countries are coded either as US or non-US
-  # for regression analysis.
-  left_join(., read_csv("data/first_author_countries.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(
-    FIRST_AUTHOR_IS_US = case_when(
-      COUNTRYCODE == 'USA' ~ 1,
-      COUNTRYCODE != 'USA' ~ 0,
-      is.na(COUNTRYCODE) ~ 0
-    )
-  ) %>%
-  # If an author has multiple countries, we are interested in if any are US
-  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
-  arrange(desc(FIRST_AUTHOR_IS_US)) %>%
-  top_n(1) %>%
-  sample_n(1) %>%
-  ungroup %>%
-  select(-COUNTRYCODE) %>%
-  # Join last author countries
-  left_join(., read_csv("data/last_author_countries.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(
-    LAST_AUTHOR_IS_US = case_when(
-      COUNTRYCODE == 'USA' ~ 1,
-      COUNTRYCODE != 'USA' ~ 0,
-      is.na(COUNTRYCODE) ~ 0
-    )
-  ) %>%
-  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
-  arrange(desc(LAST_AUTHOR_IS_US)) %>%
-  top_n(1) %>%
-  sample_n(1) %>%
-  ungroup %>%
-  select(-COUNTRYCODE) %>%
-  # Join author academic age
-  inner_join(., read_csv("data/first_author_age.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  rename(FIRST_AUTHOR_AGE = AUTHOR_AGE) %>%
-  inner_join(., read_csv("data/last_author_age.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  rename(LAST_AUTHOR_AGE = AUTHOR_AGE) %>%
-  # Join and code author gender
-  inner_join(., read_csv("data/first_author_gender.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(
-    FIRST_AUTHOR_IS_FEMALE = case_when(
-      GENDER == 'female' ~ 1,
-      GENDER == 'male' ~ 0
-    )
-  ) %>%
-  select(-GENDER) %>%
-  inner_join(., read_csv("data/last_author_gender.csv"),
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  mutate(
-    LAST_AUTHOR_IS_FEMALE = case_when(
-      GENDER == 'female' ~ 1,
-      GENDER == 'male' ~ 0
-    )
-  ) %>%
-  select(-GENDER)
+article_characteristics %>%
+  group_by(TYPE) %>%
+  summarize(
+    IF = median(IF, na.rm=TRUE),
+    IS_OA = sum(IS_OA, na.rm=TRUE)/(n()-sum(is.na(IS_OA))),
+    AUTHOR_CNT = median(AUTHOR_CNT, na.rm=TRUE),
+    FIRST_AUTHOR_IS_US = sum(FIRST_AUTHOR_IS_US, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_IS_US))),
+    LAST_AUTHOR_IS_US = sum(LAST_AUTHOR_IS_US, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_IS_US))),
+    FIRST_AUTHOR_AGE = median(FIRST_AUTHOR_AGE, na.rm = TRUE),
+    LAST_AUTHOR_AGE = median(LAST_AUTHOR_AGE, na.rm = TRUE),
+    FIRST_AUTHOR_IS_FEMALE = sum(FIRST_AUTHOR_IS_FEMALE, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_IS_FEMALE))),
+    LAST_AUTHOR_IS_FEMALE = sum(LAST_AUTHOR_IS_FEMALE, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_IS_FEMALE))),
+    FIRST_AUTHOR_TOP100_INSTITUTE = sum(FIRST_AUTHOR_TOP100_INSTITUTE, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_TOP100_INSTITUTE))),
+    LAST_AUTHOR_TOP100_INSTITUTE = sum(LAST_AUTHOR_TOP100_INSTITUTE, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_TOP100_INSTITUTE)))
+)
 
 ```
 
-### Regression analysis: 6-month citations
+### Test for differences between characteristics
 
-```{r results='hide'}
+Continuous variables: Wilcoxon signed-rank test
 
-regression_data <- article_citations %>%
-  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
-  filter(MAX_CITATION_INTERVAL >= 6,
-         CITATION_INTERVAL >= 0,
-         CITATION_INTERVAL <= 6) %>%
-  summarize(CITATION_CNT = sum(CITED)) %>%
+```{r}
+
+# Author Count
+paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, AUTHOR_CNT) %>%
+  inner_join(article_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, AUTHOR_CNT), by="PREPRINT_DOI")
+
+test <- wilcox.test(paired$AUTHOR_CNT.x, 
+            paired$AUTHOR_CNT.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+test
+# Get Z value
+Z = qnorm(test$p.value/2)
+Z
+
+# First Author Age
+paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, FIRST_AUTHOR_AGE) %>%
+  inner_join(articles_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, FIRST_AUTHOR_AGE), by="PREPRINT_DOI")
+
+test <- wilcox.test(paired$FIRST_AUTHOR_AGE.x, 
+            paired$FIRST_AUTHOR_AGE.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+test
+# Get Z value
+Z = qnorm(test$p.value/2)
+Z
+
+# Last Author Age
+paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, LAST_AUTHOR_AGE) %>%
+  inner_join(article_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, LAST_AUTHOR_AGE), by="PREPRINT_DOI")
+
+test <- wilcox.test(paired$LAST_AUTHOR_AGE.x, 
+            paired$LAST_AUTHOR_AGE.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+test
+# Get Z value
+Z = qnorm(test$p.value/2)
+Z
+
+
+```
+
+Categorical variables: Fishers Exact Test
+
+```{r}
+
+# IS_OA
+df <- article_characteristics %>% select(TYPE, IS_OA) %>%
+  group_by(TYPE, IS_OA) %>%
+  summarize(n = n()) %>%
   ungroup() %>%
-  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
-  group_by(PREPRINT_DOI) %>%
-  # for missing values (only occurring in in author gender and IF), filter out 
-  # both the deposited and control article
-  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
-              is.na(LAST_AUTHOR_IS_FEMALE),
-              is.na(IF))) %>%
-  ungroup()
+  spread(key=IS_OA, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
-library(MASS)
-
-# Citations
-fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
-
-summary(fit)
-lm.beta(fit)
-
-detach("package:QuantPsyc", unload=TRUE) # detach package
-detach("package:MASS", unload=TRUE) # detach package
-
-```
-
-### Regression analysis: 12-month citations
-
-```{r results='hide'}
-
-regression_data <- article_citations %>%
-  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
-  filter(MAX_CITATION_INTERVAL >= 12,
-         CITATION_INTERVAL >= 0,
-         CITATION_INTERVAL <= 12) %>%
-  summarize(CITATION_CNT = sum(CITED)) %>%
+# FIRST_AUTHOR_IS_US
+df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_IS_US) %>%
+  group_by(TYPE, FIRST_AUTHOR_IS_US) %>%
+  summarize(n = n()) %>%
   ungroup() %>%
-  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
-  group_by(PREPRINT_DOI) %>%
-  # for missing values (only occurring in in author gender and IF), filter out 
-  # both the deposited and control article
-  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
-              is.na(LAST_AUTHOR_IS_FEMALE),
-              is.na(IF))) %>%
-  ungroup()
+  spread(key=FIRST_AUTHOR_IS_US, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
-library(MASS)
-
-# Citations
-fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
-
-summary(fit)
-lm.beta(fit)
-
-detach("package:QuantPsyc", unload=TRUE) # detach package
-detach("package:MASS", unload=TRUE) # detach package
-
-```
-
-### Regression analysis: 24-month citations
-
-```{r results='hide'}
-
-regression_data <- article_citations %>%
-  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE) %>%
-  filter(MAX_CITATION_INTERVAL >= 24,
-         CITATION_INTERVAL >= 0,
-         CITATION_INTERVAL <=24) %>%
-  summarize(CITATION_CNT = sum(CITED)) %>%
+# LAST_AUTHOR_IS_US
+df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_IS_US) %>%
+  group_by(TYPE, LAST_AUTHOR_IS_US) %>%
+  summarize(n = n()) %>%
   ungroup() %>%
-  inner_join(., summary, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
-  group_by(PREPRINT_DOI) %>%
-  # for missing values (only occurring in in author gender and IF), filter out 
-  # both the deposited and control article
-  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
-              is.na(LAST_AUTHOR_IS_FEMALE),
-              is.na(IF))) %>%
-  ungroup()
+  spread(key=LAST_AUTHOR_IS_US, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
-library(MASS)
+# FIRST_AUTHOR_IS_FEMALE
+df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_IS_FEMALE) %>%
+  na.omit() %>%
+  group_by(TYPE, FIRST_AUTHOR_IS_FEMALE) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  spread(key=FIRST_AUTHOR_IS_FEMALE, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-# Citations
-fit <- glm.nb(CITATION_CNT ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
+# LAST_AUTHOR_IS_FEMALE
+df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_IS_FEMALE) %>%
+  na.omit() %>%
+  group_by(TYPE, LAST_AUTHOR_IS_FEMALE) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  spread(key=LAST_AUTHOR_IS_FEMALE, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-summary(fit)
-lm.beta(fit)
+# FIRST_AUTHOR_TOP100_INSTITUTE
+df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_TOP100_INSTITUTE) %>%
+  na.omit() %>%
+  group_by(TYPE, FIRST_AUTHOR_TOP100_INSTITUTE) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  spread(key=FIRST_AUTHOR_TOP100_INSTITUTE, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
-detach("package:QuantPsyc", unload=TRUE) # detach package
-detach("package:MASS", unload=TRUE) # detach package
+# LAST_AUTHOR_TOP100_INSTITUTE
+df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
+  na.omit() %>%
+  group_by(TYPE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  spread(key=LAST_AUTHOR_TOP100_INSTITUTE, value=n) %>%
+  column_to_rownames(var = "TYPE") %>%
+  as.matrix()
+fisher.test(df, alternative = "two.sided")
 
 ```
 
-### Regression analysis: Altmetrics
+### Load count data and join to characteristics for regression
 
-```{r results='hide'}
+```{r}
 
-regression_data <- summary %>%
-# join altmetrics
-  inner_join(., read_csv("data/article_altmetrics.csv"), 
-             by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+article_altmetrics <- read_csv("data/raw/article_altmetrics.csv")  %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  mutate(PREPRINT_DOI = factor(PREPRINT_DOI),
+         ARTICLE_DOI = factor(ARTICLE_DOI),
+         TYPE = factor(TYPE)) %>%
+  dplyr::select(-SOURCETITLE, -ARTICLE_CREATED_DATE) %>%
   group_by(PREPRINT_DOI) %>%
-  # for missing values (only occurring in in author gender and IF), filter out 
-  # both the deposited and control article
-  filter(!any(is.na(FIRST_AUTHOR_IS_FEMALE), 
-              is.na(LAST_AUTHOR_IS_FEMALE),
-              is.na(IF))) %>%
-  ungroup()
+  filter_all(all_vars(all(!is.na(.))))
+
+
+#articles_monthly_citations <- read_csv("data/analysis/article_monthly_citations.csv") %>%
+#  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
+#  mutate(PREPRINT_DOI = factor(PREPRINT_DOI),
+#         ARTICLE_DOI = factor(ARTICLE_DOI),
+#         TYPE = factor(TYPE))
+
+articles_monthly_citations <- read_csv("data/analysis/article_monthly_citations.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
+  mutate(PREPRINT_DOI = factor(PREPRINT_DOI),
+         ARTICLE_DOI = factor(ARTICLE_DOI),
+         TYPE = factor(TYPE)) %>%
+  dplyr::select(-SOURCETITLE, -ARTICLE_CREATED_DATE) %>%
+  group_by(PREPRINT_DOI) %>%
+  filter_all(all_vars(all(!is.na(.))))
+
+```
+
+### Correlation tests between variables
+
+```{r}
+
+library(GGally)
+
+article_characteristics %>%
+  select(IF, AUTHOR_CNT, IS_OA, FIRST_AUTHOR_AGE, LAST_AUTHOR_AGE, FIRST_AUTHOR_IS_US, LAST_AUTHOR_IS_US, FIRST_AUTHOR_IS_FEMALE, LAST_AUTHOR_IS_FEMALE, FIRST_AUTHOR_TOP100_INSTITUTE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
+  ggpairs() %>%
+  print(progress = F)
+
+```
+
+### Regression Analysis: Citations
+
+#### Reduced Model
+
+```{r}
+
+# Negative binomial model
+fit_nb_reduced_citations <- lme4::glmer.nb(CUMULATIVE_CITATIONS ~ TYPE + CITATION_INTERVAL + (1|PREPRINT_DOI), 
+                                           nAGQ=0, 
+                                           data = articles_monthly_citations)
+# Log-transformed models
+fit_log_reduced_citations <- lme4::lmer(LOG_CUMULATIVE_CITATIONS ~ TYPE + (1|PREPRINT_DOI), 
+                                        REML=F, 
+                                        data = articles_monthly_citations)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_citations <- AIC(fit_nb_reduced_citations)
+aic_log_reduced_citations <- AIC(fit_log_reduced_citations) + (2*sum(articles_monthly_citations$LOG_CUMULATIVE_CITATIONS))
+
+# Confidence intervals. WARNING: SLOW!!!
+confint_nb_reduced_citations_lme <- lme4::confint.merMod(fit_nb_reduced_citations, method="boot", boot.type="basic", nsim= 1000, parallel="snow", ncpus=4)
+
+# Assess multicollinearity (VIF)
+meanvif_nb_reduced_citations <- mean(car::vif(fit_nb_reduced_citations))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_citations <- getME(fit_nb_reduced_citations, "glmer.nb.theta")
+
+```
+
+#### Full Model
+
+```{r}
+
+# Negative binomial model
+fit_nb_full_citations <- lme4::glmer.nb(CUMULATIVE_CITATIONS ~ TYPE * CITATION_INTERVAL + TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), 
+                              nAGQ=0, 
+                              data = articles_monthly_citations)
+# Log-transformed models
+fit_log_full_citations <- lme4::lmer(LOG_CUMULATIVE_CITATIONS ~ TYPE * CITATION_INTERVAL + TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = articles_monthly_citations)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_citations <- AIC(fit_nb_full_citations)
+aic_log_full_citations <- AIC(fit_log_full_citations) + (2*sum(articles_monthly_citations$LOG_CUMULATIVE_CITATIONS))
+
+# Confidence intervals. WARNING: SLOW!!!
+confint_nb_full_citations <- confint(fit_nb_full_citations, method="boot", boot.type="basic", nsim= 1000, parallel="snow", ncpus=4)
+
+# Assess multicollinearity (VIF)
+meanvif_nb_full_citations <- mean(car::vif(fit_nb_full_citations))
+
+# Dispersion parameter (theta)
+theta_nb_full_citations <- getME(fit_nb_full_citations, "glmer.nb.theta")
+
+```
+
+### Regression Analysis: Twitter
+
+#### Reduced Models
+
+```{r}
+sa
+# Negative binomial model
+fit_nb_reduced_tweets <- lme4::glmer.nb(ALT_TWEETS ~ TYPE + (1|PREPRINT_DOI), 
+                               nAGQ=0,
+                               data = article_altmetrics)
+# Log-transformed models
+fit_log_reduced_tweets <- lme4::lmer(log(ALT_TWEETS+1) ~ TYPE + (1|PREPRINT_DOI), 
+                            REML=F, 
+                            data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_tweets <- AIC(fit_nb_reduced_tweets)
+aic_log_reduced_tweets <- AIC(fit_log_reduced_tweets) + (2*sum(log(article_altmetrics$ALT_TWEETS+1)))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_tweets <- getME(fit_nb_reduced_tweets, "glmer.nb.theta")
+```
+
+#### Full Models
+
+```{r}
+# Negative binomial model
+fit_nb_full_tweets <- lme4::glmer.nb(ALT_TWEETS ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), 
+                              nAGQ=0, 
+                              data = article_altmetrics)
+# Log-transformed models
+fit_log_full_tweets <- lme4::lmer(log(ALT_TWEETS+1) ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_tweets <- AIC(fit_nb_full_tweets)
+aic_log_full_tweets <- AIC(fit_log_full_tweets) + (2*sum(log(article_altmetrics$ALT_TWEETS+1)))
+
+# Assess multicollinearity (VIF)
+vif_nb_full_tweets <- car::vif(fit_nb_full_tweets)
+meanvif_nb_full_tweets <- mean(car::vif(fit_nb_full_tweets))
+
+# Dispersion parameter (theta)
+theta_nb_full_tweets <- getME(fit_nb_full_tweets, "glmer.nb.theta")
+```
+
+### Regression Analysis: Blogs (Feeds)
+
+#### Reduced Models
+
+```{r}
+# Negative binomial model
+fit_nb_reduced_feeds <- lme4::glmer.nb(ALT_FEEDS ~ TYPE + (1|PREPRINT_DOI), 
+                               nAGQ=0, 
+                               data = article_altmetrics)
+# Log-transformed models
+fit_log_reduced_feeds <- lme4::lmer(log(ALT_FEEDS+1) ~ TYPE + (1|PREPRINT_DOI), 
+                            REML=F, 
+                            data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_feeds <- AIC(fit_nb_reduced_feeds)
+aic_log_reduced_feeds <- AIC(fit_log_reduced_feeds) + (2*sum(log(article_altmetrics$ALT_FEEDS+1)))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_feeds <- getME(fit_nb_reduced_feeds, "glmer.nb.theta")
+
+```
+
+#### Full Models
+
+```{r}
+# Negative binomial model
+fit_nb_full_feeds <- lme4::glmer.nb(ALT_FEEDS ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), 
+                              nAGQ=0, 
+                              data = article_altmetrics)
+# Log-transformed models
+fit_log_full_feeds <- lme4::lmer(log(ALT_FEEDS+1) ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_feeds <- AIC(fit_nb_full_feeds)
+aic_log_full_feeds <- AIC(fit_log_full_feeds) + (2*sum(log(article_altmetrics$ALT_FEEDS+1)))
+
+# Assess multicollinearity (VIF)
+vif_nb_full_feeds <- car::vif(fit_nb_full_feeds)
+meanvif_nb_full_feeds <- mean(car::vif(fit_nb_full_feeds))
+
+# Dispersion parameter (theta)
+theta_nb_full_feeds <- getME(fit_nb_full_feeds, "glmer.nb.theta")
+
+```
+
+### Regression Analysis: News (MSM)
+
+#### Reduced Models
+
+```{r}
+# Negative binomial model
+fit_nb_reduced_msm <- lme4::glmer.nb(ALT_MSM ~ TYPE + (1|PREPRINT_DOI), 
+                               nAGQ=0, 
+                               data = article_altmetrics)
+# Log-transformed models
+fit_log_reduced_msm <- lme4::lmer(log(ALT_MSM+1) ~ TYPE + (1|PREPRINT_DOI), 
+                            REML=F, 
+                            data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_msm <- AIC(fit_nb_reduced_msm )
+aic_log_reduced_msm <- AIC(fit_log_reduced_msm) + (2*sum(log(article_altmetrics$ALT_MSM+1)))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_msm <- getME(fit_nb_reduced_msm , "glmer.nb.theta")
+```
+
+#### Full Models
+
+```{r}
+# Negative binomial model
+fit_nb_full_msm <- lme4::glmer.nb(ALT_MSM ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE ++ FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), 
+                              nAGQ=0, 
+                              control=glmerControl(optimizer="bobyqa",
+                                                   tolPwrss=1e-4,
+                                    optCtrl = list(maxfun = 100000)), # optimisation issues, negligible effect on results
+                              data = article_altmetrics)
+# Log-transformed models
+fit_log_full_msm <- lme4::lmer(log(ALT_MSM+1) ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_msm <- AIC(fit_nb_full_msm)
+aic_log_full_msm <- AIC(fit_log_full_msm) + (2*sum(log(article_altmetrics$ALT_MSM+1)))
+
+# Assess multicollinearity (VIF)
+vif_nb_full_msm <- car::vif(fit_nb_full_msm)
+meanvif_nb_full_msm <- mean(car::vif(fit_nb_full_msm))
+
+# Dispersion parameter (theta)
+theta_nb_full_msm <- getME(fit_nb_full_msm, "glmer.nb.theta")
+
+```
+
+### Regression Analysis: Wikipedia
+
+#### Reduced Models
+
+```{r}
+# Negative binomial model
+fit_nb_reduced_wikipedia <- lme4::glmer.nb(ALT_WIKIPEDIA ~ TYPE + (1|PREPRINT_DOI), 
+                               nAGQ=0, 
+                               data = article_altmetrics)
+# Log-transformed models
+fit_log_reduced_wikipedia <- lme4::lmer(log(ALT_WIKIPEDIA+1) ~ TYPE + (1|PREPRINT_DOI), 
+                            REML=F, 
+                            data = article_altmetrics)
+
+# Model summaries
+summary(fit_nb_reduced_wikipedia)
+summary(fit_log_reduced_wikipedia)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_wikipedia <- AIC(fit_nb_reduced_wikipedia)
+aic_log_reduced_wikipedia <- AIC(fit_log_reduced_wikipedia) + (2*sum(log(article_altmetrics$ALT_WIKIPEDIA+1)))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_wikipedia <- getME(fit_nb_reduced_wikipedia, "glmer.nb.theta")
+
+```
+
+#### Full Models
+
+```{r}
+# Negative binomial model
+fit_nb_full_wikipedia <- lme4::glmer.nb(ALT_WIKIPEDIA ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), nAGQ=0, data = article_altmetrics)
+
+# Log-transformed models
+fit_log_full_wikipedia <- lme4::lmer(log(ALT_WIKIPEDIA+1) ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_wikipedia <- AIC(fit_nb_full_wikipedia)
+aic_log_full_wikipedia <- AIC(fit_log_full_wikipedia) + (2*sum(log(article_altmetrics$ALT_WIKIPEDIA+1)))
+
+# Assess multicollinearity (VIF)
+vif_nb_full_wikipedia <- car::vif(fit_nb_full_wikipedia)
+meanvif_nb_full_wikipedia <- mean(car::vif(fit_nb_full_wikipedia))
+
+# Dispersion parameter (theta)
+theta_nb_full_wikipedia <- getME(fit_nb_full_wikipedia, "glmer.nb.theta")
+```
+
+### Regression Analysis: Mendeley
+
+#### Reduced Models
+
+```{r}
+# Negative binomial model
+fit_nb_reduced_mendeley <- lme4::glmer.nb(ALT_MENDELEY ~ TYPE + (1|PREPRINT_DOI), 
+                               nAGQ=0, 
+                               data = article_altmetrics)
+# Log-transformed models
+fit_log_reduced_mendeley <- lme4::lmer(log(ALT_MENDELEY+1) ~ TYPE + (1|PREPRINT_DOI), 
+                            REML=F, 
+                            data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_reduced_mendeley <- AIC(fit_nb_reduced_mendeley)
+aic_log_reduced_mendeley <- AIC(fit_log_reduced_mendeley) + (2*sum(log(article_altmetrics$ALT_MENDELEY+1)))
+
+# Dispersion parameter (theta)
+theta_nb_reduced_mendeley <- getME(fit_nb_reduced_mendeley, "glmer.nb.theta")
+
+```
+
+#### Full Models
+
+```{r}
+
+# Negative binomial model
+fit_nb_full_mendeley <- lme4::glmer.nb(ALT_MENDELEY ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI), 
+                              nAGQ=0, 
+                              data = article_altmetrics)
+# Log-transformed models
+fit_log_full_mendeley <- lme4::lmer(log(ALT_MENDELEY+1) ~ TYPE * IF + AUTHOR_CNT + IS_OA + FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE + FIRST_AUTHOR_TOP100_INSTITUTE + LAST_AUTHOR_TOP100_INSTITUTE + (1|PREPRINT_DOI),
+                           REML=F, 
+                           data = article_altmetrics)
+
+# Compare AIC - see https://stats.stackexchange.com/questions/48714/prerequisites-for-aic-model-comparison
+aic_nb_full_mendeley <- AIC(fit_nb_full_mendeley)
+aic_log_full_mendeley <- AIC(fit_log_full_mendeley) + (2*sum(log(article_altmetrics$ALT_MENDELEY+1)))
+
+# Assess multicollinearity (VIF)
+vif_nb_full_mendeley <- car::vif(fit_nb_full_mendeley)
+meanvif_nb_full_mendeley <- mean(car::vif(fit_nb_full_mendeley))
+
+# Dispersion parameter (theta)
+theta_nb_full_mendeley <- getME(fit_nb_full_mendeley, "glmer.nb.theta")
+
+```
+
+#### Calculation of bootstrap confidence intervals
+
+```{r}
+
+bootstrapCI <- function(fit, i) {
+
+  # Bootstrap residuals
+  boot.out <- lme4::bootMer(fit, FUN=fixef, nsim=i, parallel = "snow", ncpus=2)
   
-library(QuantPsyc) # only load this when necessary - interferes with dplyr functionality
-library(MASS)
+  # Calculate quantiles of bootstrap output
+  quantiles <- apply(boot.out$t, 2, function(x) quantile(x, probs=c(0.025, 0.5, 0.975), na.rm=T))
+  
+  # Calculate CI around fixed effects
+  CI_lower <- fixef(fit) - (quantiles[2,] - quantiles[1,])
+  CI_upper <- fixef(fit) + (quantiles[3,] - quantiles[2,])
+  
+  return(rbind(CI_upper, CI_lower))
+}
 
-fit_tweets <- glm.nb(ALT_TWEETS ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
+iterations <- 1000
 
-fit_feeds <- glm.nb(ALT_FEEDS ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
+confint_nb_reduced_citations <- bootstrapCI(fit_nb_reduced_citations, iterations)
+confint_nb_full_citations <- bootstrapCI(fit_nb_full_citations, iterations)
+confint_nb_reduced_tweets <- bootstrapCI(fit_nb_reduced_tweets, iterations)
+confint_nb_full_tweets <- bootstrapCI(fit_nb_full_tweets, iterations)
+confint_nb_reduced_feeds <- bootstrapCI(fit_nb_reduced_feeds, iterations)
+confint_nb_full_feeds <- bootstrapCI(fit_nb_full_feeds, iterations)
+confint_nb_reduced_msm <- bootstrapCI(fit_nb_reduced_msm, iterations)
+confint_nb_full_msm <- bootstrapCI(fit_nb_full_msm, iterations)
+confint_nb_reduced_wikipedia <- bootstrapCI(fit_nb_reduced_wikipedia, iterations)
+confint_nb_full_wikipedia <- bootstrapCI(fit_nb_full_wikipedia, iterations)
+confint_nb_reduced_mendeley <- bootstrapCI(fit_nb_reduced_mendeley, iterations)
+confint_nb_full_mendeley <- bootstrapCI(fit_nb_full_mendeley, iterations)
 
-fit_msm <- glm.nb(ALT_MSM ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
-
-fit_wikipedia <- glm.nb(ALT_WIKIPEDIA ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=50))
-
-fit_mendeley <- glm.nb(ALT_MENDELEY ~ IS_DEPOSITED + IF + IS_OA + AUTHOR_CNT + IS_REVIEW +
-                FIRST_AUTHOR_IS_US + LAST_AUTHOR_IS_US + 
-                FIRST_AUTHOR_AGE + LAST_AUTHOR_AGE + 
-                FIRST_AUTHOR_IS_FEMALE + LAST_AUTHOR_IS_FEMALE, 
-              data = regression_data, control=glm.control(maxit=100))
-
-summary(fit_tweets)
-lm.beta(fit_tweets)
-
-summary(fit_feeds)
-lm.beta(fit_feeds)
-
-summary(fit_msm)
-lm.beta(fit_msm)
-
-summary(fit_wikipedia)
-lm.beta(fit_wikipedia)
-
-summary(fit_mendeley)
-lm.beta(fit_mendeley)
-
-detach("package:QuantPsyc", unload=TRUE) # detach package
-detach("package:MASS", unload=TRUE) # detach package
 
 ```
-
 

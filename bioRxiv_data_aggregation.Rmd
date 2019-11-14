@@ -1,0 +1,339 @@
+---
+title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv data aggregation"
+---
+
+# Here we aggregate our raw data into more useful sets for analysis
+
+```{r}
+
+library(tidyverse)
+library(lubridate)
+
+```
+
+```{r}
+# For cleaning strings for improved matching efficiency (e.g. titles)
+cleanString <- function(string) {
+  string <- gsub("<.*?>", "", string) # remove tags
+  string <- gsub("[\r\n]", "", string) # remove line breaks
+  string <- str_replace_all(string,"[^[:graph:]]", " ") # remove non UTF-8 encoded characters
+  string <- str_trim(string) # remove whitespace
+  string <- tolower(string) # set lower case
+  return(as.character(string)) # return as character vector
+}
+```
+
+# Load relevant raw datasets and conduct preprocessing steps
+
+```{r}
+
+# Articles basic data
+articles <- read_csv("data/raw/articles.csv")
+
+# Preprints basic data
+preprints <- read_csv("data/raw/preprints.csv")
+
+# Articles citation data
+citing_articles <- read_csv("data/raw/citing_articles.csv")
+
+# Preprints citation data
+preprint_citing_articles <- read_csv("data/raw/preprint_citing_articles.csv")
+
+# Authorship data
+
+# Author academic ages
+article_first_author_age <- read_csv("data/raw/first_author_age.csv") %>%
+  rename(FIRST_AUTHOR_AGE = AUTHOR_AGE) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, FIRST_AUTHOR_AGE)
+article_last_author_age <- read_csv("data/raw/last_author_age.csv") %>%
+  rename(LAST_AUTHOR_AGE = AUTHOR_AGE) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, LAST_AUTHOR_AGE)
+
+# Author gender
+article_first_author_gender <- read_csv("data/raw/first_author_gender.csv") %>%
+  mutate(
+    FIRST_AUTHOR_IS_FEMALE = case_when(
+      GENDER == 'female' ~ 1,
+      GENDER == 'male' ~ 0,
+      GENDER == 'unknown' ~ NA_real_
+    )
+  ) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, FIRST_AUTHOR_IS_FEMALE)
+article_last_author_gender <- read_csv("data/raw/last_author_gender.csv") %>%
+  mutate(
+    LAST_AUTHOR_IS_FEMALE = case_when(
+      GENDER == 'female' ~ 1,
+      GENDER == 'male' ~ 0,
+      GENDER == 'unknown' ~ NA_real_
+    )
+  ) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, LAST_AUTHOR_IS_FEMALE)
+
+# Author country. Authors are coded as 1 if author is from US, and 0 if not.
+article_first_author_country <- read_csv("data/raw/first_author_countries_institutions.csv") %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE) %>%
+  mutate(
+    FIRST_AUTHOR_IS_US = case_when(
+      COUNTRYCODE == 'USA' ~ 1,
+      COUNTRYCODE != 'USA' ~ 0,
+      is.na(COUNTRYCODE) ~ 0
+    )
+  ) %>%
+  # If an author has multiple countries, we are interested in if any are US
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(FIRST_AUTHOR_IS_US)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup %>%
+  select(-COUNTRYCODE)
+article_last_author_country <- read_csv("data/raw/last_author_countries_institutions.csv") %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE) %>%
+  mutate(
+    LAST_AUTHOR_IS_US = case_when(
+      COUNTRYCODE == 'USA' ~ 1,
+      COUNTRYCODE != 'USA' ~ 0,
+      is.na(COUNTRYCODE) ~ 0
+    )
+  ) %>%
+  # If an author has multiple countries, we are interested in if any are US
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(LAST_AUTHOR_IS_US)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup %>%
+  select(-COUNTRYCODE)
+
+# Author institutes
+leiden_top100_institutes <- read_csv("data/raw/leiden_ranking_top100_biomed_2014_2017_pp10.csv") %>%
+  mutate(University = cleanString(University)) %>%
+  pull(University)
+article_first_author_institute <- read_csv("data/raw/first_author_countries_institutions.csv") %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, INSTITUTION_FULL) %>%
+  rowwise %>%
+  mutate(
+    INSTITUTION_FULL = cleanString(INSTITUTION_FULL),
+    FIRST_AUTHOR_TOP100_INSTITUTE = case_when(
+      sum(stringr::str_detect(INSTITUTION_FULL, leiden_top100_institutes)) > 0 ~ 1,
+      sum(stringr::str_detect(INSTITUTION_FULL, leiden_top100_institutes)) == 0 ~ 0,
+    )
+  ) %>%
+  # If an author has multiple institutes, we are interested in if any are top-100
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(FIRST_AUTHOR_TOP100_INSTITUTE)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup() %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, FIRST_AUTHOR_TOP100_INSTITUTE)
+article_last_author_institute <- read_csv("data/raw/last_author_countries_institutions.csv") %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, INSTITUTION_FULL) %>%
+  rowwise %>%
+  mutate(
+    INSTITUTION_FULL = cleanString(INSTITUTION_FULL),
+    LAST_AUTHOR_TOP100_INSTITUTE = case_when(
+      sum(stringr::str_detect(INSTITUTION_FULL, leiden_top100_institutes)) > 0 ~ 1,
+      sum(stringr::str_detect(INSTITUTION_FULL, leiden_top100_institutes)) == 0 ~ 0,
+    )
+  ) %>%
+  # If an author has multiple institutes, we are interested in if any are top-100
+  group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  arrange(desc(LAST_AUTHOR_TOP100_INSTITUTE)) %>%
+  top_n(1) %>%
+  sample_n(1) %>%
+  ungroup() %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, LAST_AUTHOR_TOP100_INSTITUTE)
+
+# OA data
+article_oa_status <- read_csv("data/raw/article_oa_status.csv") %>%
+  mutate(IS_OA = as.numeric(IS_OA)) %>%
+  select(PREPRINT_DOI, ARTICLE_DOI, IS_OA)
+
+# Other data
+journal_impact_factors <- read_csv("data/raw/journal_impact_factors.csv")
+
+```
+
+# Aggregate Article Characteristics
+
+```{r}
+
+article_characteristics <- articles %>% 
+  select(PREPRINT_DOI, 
+         ARTICLE_DOI,
+         SOURCETITLE,
+         ARTICLE_CREATED_DATE,
+         AUTHOR_CNT,
+         TYPE) %>%
+  mutate(YEAR = year(ARTICLE_CREATED_DATE))%>%
+  # Join authorship data
+  left_join(article_first_author_age, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_last_author_age, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_first_author_gender, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_last_author_gender, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_first_author_country, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_last_author_country, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_first_author_institute, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(article_last_author_institute, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  # Join OA data
+  left_join(article_oa_status, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  # Join IF data
+  left_join(journal_impact_factors, by=c("SOURCETITLE", "YEAR")) %>%
+  select(-YEAR)
+
+write_csv(article_characteristics, "data/analysis/article_characteristics.csv")
+
+```
+
+# Aggregate Article citations
+
+```{r}
+
+article_monthly_citations <- articles %>% 
+  select(PREPRINT_DOI, ARTICLE_DOI, TYPE, ARTICLE_CREATED_DATE) %>%
+  # Joing citation data
+  left_join(citing_articles, by=c("ARTICLE_DOI" = "CITED_ARTICLE_DOI")) %>%
+  mutate(
+    # Determine cited status of an article (1 = cited, 0 = not cited)
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    # Calculate interval between publication and citation
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), "months")) %/% months(1),
+    # Calculate an articles maximum citation interval within our time period
+    # E.g. an article published in Jan. 2017 can only have 12 months of citation data
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), "months"),
+                                     floor_date(date("2017-12-01"), "months")) %/% months(1)) %>%
+  # Expand data to include all article/citation interval combinations
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, ARTICLE_DOI, TYPE, MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  # We only want to analyse up to the 36 month citation window
+  filter(CITATION_INTERVAL >= 0, 
+         CITATION_INTERVAL <= 36,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+  # Summarize citation counts for each monthly interval
+  group_by(PREPRINT_DOI, ARTICLE_DOI, TYPE, CITATION_INTERVAL) %>%
+  summarize(CITATIONS = sum(CITED),
+            LOG_CITATIONS = log(sum(CITED+1))) %>%
+  ungroup() %>%
+  group_by(PREPRINT_DOI, TYPE, ARTICLE_DOI) %>%
+  arrange(CITATION_INTERVAL) %>%
+  mutate(CUMULATIVE_CITATIONS = cumsum(CITATIONS),
+         LOG_CUMULATIVE_CITATIONS = log(CUMULATIVE_CITATIONS + 1)) %>%
+  ungroup()
+
+write_csv(articles_monthly_citations, "data/analysis/article_monthly_citations.csv")
+
+```
+
+# Aggregate Preprint Citations
+
+```{r}
+
+# Citations to all preprints, with citation interval as a function of preprint published dae
+
+preprints %>%
+  # Join articles
+  left_join(articles %>% filter(TYPE=="Deposited"), 
+            by="PREPRINT_DOI") %>%
+  # Determine published status
+  mutate(
+    IS_PUBLISHED = case_when(
+      is.na(ARTICLE_DOI) ~ "Unpublished",
+      !is.na(ARTICLE_DOI) ~ "Published"
+    )
+  ) %>%
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, IS_PUBLISHED) %>%
+  # Join preprint citation data
+  left_join(select(preprint_citing_articles, PREPRINT_DOI, CITING_ARTICLE_CREATED_DATE), 
+            by="PREPRINT_DOI") %>%
+  # Determine cited status
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    # Calculate interval between publication and citation
+    CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                                 "months")) %/% months(1),
+    # Calculate an articles maximum citation interval within our time period
+    MAX_CITATION_INTERVAL = interval(floor_date(date(PREPRINT_POSTED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   PREPRINT_POSTED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   MAX_CITATION_INTERVAL,
+                   IS_PUBLISHED), 
+           fill=list(CITED = 0)) %>%
+  # Limit to 36 month citation window
+  filter(CITATION_INTERVAL >= 0, 
+         CITATION_INTERVAL <= 36,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL) %>%
+  group_by(PREPRINT_DOI, IS_PUBLISHED, CITATION_INTERVAL) %>%
+  summarize(CITATIONS = sum(CITED),
+            LOG_CITATIONS = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  write_csv("data/analysis/all_preprints_monthly_citations.csv")
+
+
+# Citations to only published preprints, with citation interval as a function of journal article published date
+
+preprints %>%
+  # Join articles
+  inner_join(articles, by="PREPRINT_DOI") %>%
+  filter(TYPE == "Deposited") %>%
+  # Join preprint citation data
+  select(PREPRINT_DOI, PREPRINT_POSTED_DATE, ARTICLE_CREATED_DATE) %>%
+  left_join(select(preprint_citing_articles, PREPRINT_DOI, CITING_ARTICLE_CREATED_DATE), 
+            by="PREPRINT_DOI") %>%
+  # Determine cited status
+  mutate(
+    CITED = case_when(
+      is.na(CITING_ARTICLE_CREATED_DATE) ~ 0,
+      !is.na(CITING_ARTICLE_CREATED_DATE) ~ 1
+    ),
+    # Calculate interval between preprint deposition and journal article publication
+    MIN_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"), 
+                                     floor_date(date(PREPRINT_POSTED_DATE), 
+                                                "months")) %/% months(1),
+    # Calculate maximum potential citation interval
+    MAX_CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                                "months"),
+                                     floor_date(date("2017-12-01"), 
+                                                "months")) %/% months(1),
+    # Calculate interval between publication and citation
+    CITATION_INTERVAL = interval(floor_date(date(ARTICLE_CREATED_DATE), 
+                                            "months"),
+                                 floor_date(date(CITING_ARTICLE_CREATED_DATE), 
+                                            "months")) %/% months(1)) %>%
+  # Expand data to include all article/interval combinations
+  complete(CITATION_INTERVAL, 
+           nesting(PREPRINT_DOI, 
+                   PREPRINT_POSTED_DATE, 
+                   ARTICLE_CREATED_DATE, 
+                   CITING_ARTICLE_CREATED_DATE,
+                   MIN_CITATION_INTERVAL, 
+                   MAX_CITATION_INTERVAL), 
+           fill=list(CITED = 0)) %>%
+  # Limit citation interval to 12 months prior to, and 24 months following publication
+  filter(CITATION_INTERVAL >= -12, 
+         CITATION_INTERVAL <= 24,
+         CITATION_INTERVAL <= MAX_CITATION_INTERVAL,
+         CITATION_INTERVAL >= MIN_CITATION_INTERVAL)  %>%
+  group_by(PREPRINT_DOI, CITATION_INTERVAL) %>%
+  summarize(CITATIONS = sum(CITED),
+            LOG_CITATIONS = log(sum(CITED)+1)) %>%
+  ungroup() %>%
+  write_csv("data/analysis/published_preprints_monthly_citations.csv")
+
+```
+
+

@@ -1,6 +1,5 @@
 ---
 title: "Examining the citation and altmetric advantage of bioRxiv preprints: bioRxiv data retrieval"
-output: html_notebook
 ---
 
 # Initial Configuration --------------------------------------------------------
@@ -126,8 +125,8 @@ preprints <- tibble(
 )
 
 # Write results to csv
-write.csv(preprints %>% select(PREPRINT_DOI, PREPRINT_TITLE, PREPRINT_POSTED_DATE), 
-          file="data/preprints.csv", 
+write.csv(preprints, 
+          file="data/raw/preprints.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -165,7 +164,7 @@ preprints_published_articles_cr <- tibble(
 
 # Write results to csv
 write.csv(preprints_published_articles_cr, 
-          file="data/preprints_published_articles_cr.csv", 
+          file="data/raw/preprints_published_articles_cr.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -228,7 +227,7 @@ preprints_published_articles_bio <- map_dfr(preprints$preprint_doi,
 
 # Write results to csv
 write.csv(preprints_published_articles_bio, 
-          file="data/preprints_published_articles_bio.csv", 
+          file="data/raw/preprints_published_articles_bio.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -242,7 +241,6 @@ rm(retrieveData, rD, remDr)
 ### 3. Matching of preprints to Scopus records via fuzzy title and abstract matching
 
 ```{r results='hide'}
-
 # Open DB connection
 con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
@@ -258,10 +256,10 @@ sqlSave(con, preprints, "BIORXIV_PREPRINTS",
                    PREPRINT_ABSTRACT_SHORT = "varchar(128)"))
 
 # Create a table of potentially matching items
-sqlQuery(con, read_file("sql/preprints_scopus_fuzzy_matching.sql"))
+sqlQuery(con, read_file("sql/preprints_scopus_matching_items.sql"))
 
 # Read titles and abstracts of scopus items for matching
-scp_items <- as_tibble(sqlQuery(con, read_file("sql/preprints_scopus_titles_abstracts.sql"))) %>%
+scp_items <- as_tibble(sqlQuery(con, read_file("sql/preprints_scopus_matching_items_details.sql"))) %>%
                  distinct(PK_ITEMS, .keep_all=T) %>%
                  mutate(DOI = cleanString(DOI),
                         AUTHORNAME = cleanString(AUTHORNAME),
@@ -328,7 +326,7 @@ preprints_published_articles_scp <- preprints %>%
 
 # Write to csv
 write.csv(preprints_published_articles_scp, 
-          "data/preprints_published_articles_scp.csv",
+          "data/raw/preprints_published_articles_scp.csv",
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -382,13 +380,13 @@ odbcClose(con)
 
 # Write to csv
 write.csv(preprints_published_articles, 
-          "data/preprints_published_articles.csv",
+          "data/raw/preprints_published_articles.csv",
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
 # Remove redundant variables
 rm(preprints_published_articles_bio, preprints_published_articles_cr,
-   preprints_published_articles_scp, con, query)
+   preprints_published_articles_scp, con)
 
 ```
 
@@ -429,7 +427,7 @@ con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 # Create a table of all potential control articles from same journals
 sqlQuery(con, read_file("sql/all_control_articles.sql"))
 
-# Clean controls
+# Remove some common unwanted title names (e.g. "In this issue")
 sqlQuery(con, read_file("sql/clean_controls.sql"))
 
 # Create table of single category articles
@@ -479,9 +477,6 @@ published_articles <- sqlFetch(con, "BIORXIV_PUBLISHED_ARTICLES") %>%
   select(-FK_ITEMS, -UT_EID, -FK_SOURCES) %>%
   distinct(PREPRINT_DOI, .keep_all = T)
 
-# Close DB connection
-odbcClose(con)
-
 # Retrieve all control articles
 control_articles_analysis <- control_articles %>%
   mutate(TYPE = "Control") %>%
@@ -504,7 +499,7 @@ sqlSave(con, articles, "BIORXIV_ALL_ARTICLES", rownames=FALSE,
 
 # Write to csv
 write.csv(articles, 
-          file="data/articles.csv", 
+          file="data/raw/articles.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -531,7 +526,7 @@ odbcClose(con)
 rm(con)
 
 write.csv(citing_articles, 
-          file="data/citing_articles.csv", 
+          file="data/raw/citing_articles.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -560,15 +555,16 @@ request <- function(doi){
 }
 
 # Function for retrieving altmetrics
-getAltmetrics <- function(doi) {
+getAltmetrics <- function(ARTICLE_DOI, PREPRINT_DOI) {
   
-  response <- request(doi)
+  response <- request(ARTICLE_DOI)
   
   # If no response, set all variables to NA
   if(!length(response)){
     
     altmetrics_data <- tibble(
-      "ARTICLE_DOI" = doi,
+      "PREPRINT_DOI" = PREPRINT_DOI,
+      "ARTICLE_DOI" = ARTICLE_DOI,
       "HAS_ALTMETRIC" = F,
       "ALT_SCORE" = NA,
       "ALT_TWEETS" = NA, 
@@ -587,7 +583,8 @@ getAltmetrics <- function(doi) {
     # Build tibble of results
     # Where no data exists on a field, we set it to NA
     altmetrics_data <- tibble(
-      "ARTICLE_DOI" = doi,
+      "PREPRINT_DOI" = PREPRINT_DOI,
+      "ARTICLE_DOI" = ARTICLE_DOI,
       "HAS_ALTMETRIC" = T,
       "ALT_SCORE" = if (length(data$score)) data$score else NA,
       "ALT_TWEETS" = if (length(data$cited_by_tweeters_count)) data$cited_by_tweeters_count else NA, 
@@ -604,28 +601,23 @@ getAltmetrics <- function(doi) {
 }
 
 # Retrieve altmetric data for all published articles
-article_altmetrics <- map_dfr(articles$ARTICLE_DOI,
-                              function(x) getAltmetrics(x)) %>%
-  distinct(ARTICLE_DOI, .keep_all=T) %>% 
-  left_join(select(articles, PREPRINT_DOI, ARTICLE_DOI), 
-            by=c("ARTICLE_DOI")) %>%
-  replace(., is.na(.), 0) %>%
-  select(PREPRINT_DOI, ARTICLE_DOI, HAS_ALTMETRIC, ALT_SCORE, ALT_TWEETS, 
-         ALT_FEEDS, ALT_MSM, ALT_POLICIES, ALT_WIKIPEDIA, ALT_MENDELEY)
+article_altmetrics <- map2_dfr(articles$ARTICLE_DOI, articles$PREPRINT_DOI,
+                               getAltmetrics) %>%
+  replace(., is.na(.), 0)
 
 # Retrieve altmetric data for preprints
-preprint_altmetrics <- map_dfr(preprints$PREPRINT_DOI, 
-                               function(x) getAltmetrics(x)) %>%
-  rename(PREPRINT_DOI = ARTICLE_DOI) %>%
+preprint_altmetrics <- map2_dfr(preprints$PREPRINT_DOI, preprints$PREPRINT_DOI,
+                                getAltmetrics) %>%
+  select(-ARTICLE_DOI) %>%
   replace(., is.na(.), 0)
 
 # Write to csv
 write.csv(article_altmetrics,
-          file="data/article_altmetrics.csv", 
+          file="data/raw/article_altmetrics.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 write.csv(preprint_altmetrics,
-          file="data/preprint_altmetrics.csv", 
+          file="data/raw/preprint_altmetrics.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -643,11 +635,12 @@ article_oa_status <- oadoi_fetch(dois = articles$ARTICLE_DOI,
   select(PREPRINT_DOI, doi, is_oa, journal_is_oa) %>%
   rename(ARTICLE_DOI = doi,
          IS_OA = is_oa,
-         JOURNAL_IS_OA = journal_is_oa)
+         JOURNAL_IS_OA = journal_is_oa) %>%
+  distinct(PREPRINT_DOI, ARTICLE_DOI, IS_OA, JOURNAL_IS_OA)
 
 # write to csv
 write.csv(article_oa_status,
-          file="data/article_oa_status.csv", 
+          file="data/raw/article_oa_status.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -707,7 +700,7 @@ preprint_citing_articles <- bind_rows(reftitle_matches_title,
 
 # Write to csv
 write.csv(preprint_citing_articles,
-          file="data/preprint_citing_articles.csv", 
+          file="data/raw/preprint_citing_articles.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -722,7 +715,7 @@ Impact factors are calculated directly from Scopus data
 ```{r}
 
 # Take a two-step approach: first, find the journals within our bioRxiv articles,
-# and extract all articles published within those journals for our analsis period.
+# and extract all articles published within those journals for our analysis period.
 # Then retrieve the total number of published items per journal per year, 
 # and the total number of citations to those articles over the following two years,
 # and calculate respective IF
@@ -738,7 +731,7 @@ odbcClose(con)
 
 # Write to csv
 write.csv(impact_factors,
-          file="data/impact_factors.csv", 
+          file="data/raw/impact_factors.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -757,16 +750,16 @@ con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
 # Retrieve countries associated with first authors 
 # Note: an author can have more than one country
-first_author_countries <- as_tibble(sqlQuery(con, read_file("sql/first_author_countries.sql")))
-last_author_countries <- as_tibble(sqlQuery(con, read_file("sql/last_author_countries.sql")))
+first_author_countries_institutions <- as_tibble(sqlQuery(con, read_file("sql/first_author_countries_institutions.sql")))
+last_author_countries_institutions <- as_tibble(sqlQuery(con, read_file("sql/last_author_countries_institutions.sql")))
 
 # Join author countries back to articles
-first_author_countries <- articles %>% 
-  left_join(first_author_countries, by="ARTICLE_DOI") %>% 
-  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE)
-last_author_countries <- articles %>% 
-  left_join(last_author_countries, by="ARTICLE_DOI") %>% 
-  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE)
+first_author_countries_institutions <- articles %>% 
+  left_join(first_author_countries_institutions, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE, INSTITUTION_FULL)
+last_author_countries_institutions <- articles %>% 
+  left_join(last_author_countries_institutions, by="ARTICLE_DOI") %>% 
+  distinct(PREPRINT_DOI, ARTICLE_DOI, COUNTRYCODE, INSTITUTION_FULL)
 
 # Close DB connection
 odbcClose(con)
@@ -775,17 +768,17 @@ odbcClose(con)
 rm(query, con)
 
 # write to csv
-write.csv(first_author_countries,
-          file="data/first_author_countries.csv", 
+write.csv(first_author_countries_institutions,
+          file="data/raw/first_author_countries_institutions.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
-write.csv(last_author_countries,
-          file="data/last_author_countries.csv", 
+write.csv(last_author_countries_institutions,
+          file="data/raw/last_author_countries_institutions.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 ```
 
-### Author Academic Age and Productivity
+### Author Academic Age
 
 ```{r}
 
@@ -817,6 +810,7 @@ last_author_age <- articles %>%
   arrange(desc(AUTHOR_AGE)) %>% 
   top_n(1) %>% 
   ungroup()
+
 # Close DB connection
 odbcClose(con)
 
@@ -825,11 +819,11 @@ rm(con)
 
 # write to csv
 write.csv(first_author_age,
-          file="data/first_author_age.csv", 
+          file="data/raw/first_author_age.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 write.csv(last_author_age,
-          file="data/last_author_age.csv", 
+          file="data/raw/last_author_age.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
@@ -841,7 +835,7 @@ write.csv(last_author_age,
 # Open DB connection
 con <- odbcConnect("KB", uid=kb_username, pwd=kb_password)
 
-# Retireve first author names from Scopus
+# Retrieve first author names from Scopus
 first_author_names <- as_tibble(sqlQuery(con, read_file("sql/first_author_names.sql")))
 last_author_names <- as_tibble(sqlQuery(con, read_file("sql/last_author_names.sql")))
 
@@ -850,16 +844,30 @@ odbcClose(con)
 
 # Merge names and countries to produce a list of distinct names/countries
 first_author_names_countries <- first_author_names %>%
-  inner_join(first_author_countries, by="ARTICLE_DOI") %>%
-  select(FIRSTNAME, COUNTRYCODE) %>%
+  inner_join(first_author_countries_institutions, by="ARTICLE_DOI") %>%
   distinct(FIRSTNAME, COUNTRYCODE)
 last_author_names_countries <- last_author_names %>%
-  inner_join(last_author_countries, by="ARTICLE_DOI") %>%
-  select(FIRSTNAME, COUNTRYCODE) %>%
+  inner_join(last_author_countries_institutions, by="ARTICLE_DOI")  %>%
   distinct(FIRSTNAME, COUNTRYCODE)
+# Bind rows and apply some preprocessing steps to names
+author_names_countries <- bind_rows(first_author_names_countries,
+                                    last_author_names_countries) %>%
+  # Regex to strip initials
+  mutate(FIRSTNAME = cleanString(gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME))) %>%
+  # Remove blanks
+  filter(nchar(FIRSTNAME) > 0) %>%
+  # Keep only distinct name-country values
+  distinct(FIRSTNAME, COUNTRYCODE) %>%
+  # Remove factors from COUNTRYCODE
+  mutate(COUNTRYCODE = as.character(COUNTRYCODE))
+
+```
+
+
+```{r}
 
 # Function for retrieving gender from Gender API
-getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
+getGender<- function(FIRSTNAME, COUNTRYCODE) {
   
   # If a country code is present, use a localized query
   if(!is.na(COUNTRYCODE)){
@@ -893,7 +901,7 @@ getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   }else{
     return(
       tibble(
-        "NAME" = FIRSTNAME,
+        "FIRSTNAME" = FIRSTNAME,
         "COUNTRYCODE" = COUNTRYCODE,
         "GENDER" = if(length(gender)) gender else NA
       )
@@ -901,28 +909,9 @@ getGenderFromName<- function(FIRSTNAME, COUNTRYCODE) {
   }
 }
 
-# First we make a list of all potential name/country combinations, to reduce the
-# total number of API calls we need to make
-first_author_names_gender <- first_author_names_countries %>% 
-  # Regex to strip initials
-  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
-  # Remove blanks
-  filter(nchar(FIRSTNAME) > 0) %>%
-  # Keep only distinct name-country values
-  distinct(FIRSTNAME, COUNTRYCODE) %>%
-  # Remove factors from COUNTRYCODE
-  mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
-  pmap_dfr(., getGenderFromName)
-last_author_names_gender <- last_author_names_countries %>% 
-  # Regex to strip initials
-  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
-  # Remove blanks
-  filter(nchar(FIRSTNAME) > 0) %>%
-  # Keep only distinct name-country values
-  distinct(FIRSTNAME, COUNTRYCODE) %>%
-  # Remove factors from COUNTRYCODE
-  mutate(COUNTRYCODE = as.character(COUNTRYCODE)) %>%
-  pmap_dfr(., getGenderFromName)
+# Process names and make API call to retrieve gender
+author_names_countries_gender <- author_names_countries %>% 
+  pmap_dfr(., getGender)
 
 # Genders are joined back to articles from the name/country/gender relationships
 # retrieved above. Where no gender is returned, we set gender to 'unknown'. A
@@ -931,28 +920,31 @@ last_author_names_gender <- last_author_names_countries %>%
 first_author_gender <- articles %>%
   left_join(first_author_names, by="ARTICLE_DOI") %>%
   distinct() %>%
-  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
-  left_join(first_author_countries, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  left_join(first_author_names_gender, by=c("FIRSTNAME" = "NAME",
-                                             "COUNTRYCODE")) %>%
+  mutate(FIRSTNAME = cleanString(gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME))) %>%
+  left_join(first_author_countries_institutions, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(author_names_countries_gender, by=c("FIRSTNAME", "COUNTRYCODE")) %>%
   distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER) %>%
+  # If missing, replace with unknown
   replace(., is.na(.), "unknown") %>%
   group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  # Sometimes conflicting results are given - set these cases to 'unknown'
   mutate(COUNT = n()) %>%
   mutate(GENDER = ifelse(COUNT < 2, GENDER, "unknown")) %>%
   select(-COUNT) %>%
   ungroup() %>%
   distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER)
+
 last_author_gender <- articles %>%
   left_join(last_author_names, by="ARTICLE_DOI") %>%
   distinct() %>%
-  mutate(FIRSTNAME = gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME)) %>%
-  left_join(last_author_countries, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
-  left_join(last_author_names_gender, by=c("FIRSTNAME" = "NAME",
-                                             "COUNTRYCODE")) %>%
+  mutate(FIRSTNAME = cleanString(gsub("(?:[A-Z]\\.){1,3},?", "", FIRSTNAME))) %>%
+  left_join(last_author_countries_institutions, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  left_join(author_names_countries_gender, by=c("FIRSTNAME", "COUNTRYCODE")) %>%
   distinct(PREPRINT_DOI, ARTICLE_DOI, GENDER) %>%
+  # If missing, replace with unknown
   replace(., is.na(.), "unknown") %>%
   group_by(PREPRINT_DOI, ARTICLE_DOI) %>%
+  # Sometimes conflicting results are given - set these cases to 'unknown'
   mutate(COUNT = n()) %>%
   mutate(GENDER = ifelse(COUNT < 2, GENDER, "unknown")) %>%
   select(-COUNT) %>%
@@ -961,11 +953,11 @@ last_author_gender <- articles %>%
 
 # write to csv
 write.csv(first_author_gender,
-          file="data/first_author_gender.csv", 
+          file="data/raw/first_author_gender.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 write.csv(last_author_gender,
-          file="data/last_author_gender.csv", 
+          file="data/raw/last_author_gender.csv", 
           row.names=FALSE, 
           fileEncoding="UTF-8")
 
