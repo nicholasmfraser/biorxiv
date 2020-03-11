@@ -111,156 +111,401 @@ read_csv("data/raw/articles.csv") %>%
 
 # Regression Analysis ----------------------------------------------------------
 
-### Summary Characteristics
+### Datasets for analysis
 
 ```{r}
 
 # Build a summary table of each individual characteristic included in our regression model
 article_characteristics <- read_csv("data/analysis/article_characteristics.csv")
 
-article_characteristics %>%
-  group_by(TYPE) %>%
-  summarize(
-    IF = median(IF, na.rm=TRUE),
-    IS_OA = sum(IS_OA, na.rm=TRUE)/(n()-sum(is.na(IS_OA))),
-    AUTHOR_CNT = median(AUTHOR_CNT, na.rm=TRUE),
-    FIRST_AUTHOR_IS_US = sum(FIRST_AUTHOR_IS_US, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_IS_US))),
-    LAST_AUTHOR_IS_US = sum(LAST_AUTHOR_IS_US, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_IS_US))),
-    FIRST_AUTHOR_AGE = median(FIRST_AUTHOR_AGE, na.rm = TRUE),
-    LAST_AUTHOR_AGE = median(LAST_AUTHOR_AGE, na.rm = TRUE),
-    FIRST_AUTHOR_IS_FEMALE = sum(FIRST_AUTHOR_IS_FEMALE, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_IS_FEMALE))),
-    LAST_AUTHOR_IS_FEMALE = sum(LAST_AUTHOR_IS_FEMALE, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_IS_FEMALE))),
-    FIRST_AUTHOR_TOP100_INSTITUTE = sum(FIRST_AUTHOR_TOP100_INSTITUTE, na.rm=TRUE)/(n()-sum(is.na(FIRST_AUTHOR_TOP100_INSTITUTE))),
-    LAST_AUTHOR_TOP100_INSTITUTE = sum(LAST_AUTHOR_TOP100_INSTITUTE, na.rm=TRUE)/(n()-sum(is.na(LAST_AUTHOR_TOP100_INSTITUTE)))
-)
+# Generate a dataset of paired articles and their relative article characteristics
+paired <- article_characteristics %>% filter(TYPE == "Deposited") %>%
+  inner_join(article_characteristics %>% filter(TYPE == "Control"), by="PREPRINT_DOI")
 
 ```
 
-### Test for differences between characteristics
+### Summary statistics and tests for differences between characteristics
 
 Continuous variables: Wilcoxon signed-rank test
 
 ```{r}
 
+# IF (no need to calculate paired differences/tests)
+article_characteristics %>%
+  group_by(TYPE) %>%
+  summarize(median = median(IF, na.rm = T),
+            q25 = quantile(IF, 0.25, na.rm = T),
+            q75 = quantile(IF, 0.75, na.rm = T),
+            min = min(IF, na.rm = T),
+            max = max(IF, na.rm = T))
+
 # Author Count
-paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, AUTHOR_CNT) %>%
-  inner_join(article_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, AUTHOR_CNT), by="PREPRINT_DOI")
+article_characteristics %>%
+  group_by(TYPE) %>%
+  summarize(median = median(AUTHOR_CNT, na.rm = T),
+            q25 = quantile(AUTHOR_CNT, 0.25, na.rm = T),
+            q75 = quantile(AUTHOR_CNT, 0.75, na.rm = T),
+            min = min(AUTHOR_CNT, na.rm = T),
+            max = max(AUTHOR_CNT, na.rm = T))
+
+paired %>%
+  mutate(diff = AUTHOR_CNT.x - AUTHOR_CNT.y) %>%
+  summarize(median = median(diff, na.rm = T),
+            q25 = quantile(diff, 0.25, na.rm = T),
+            q75 = quantile(diff, 0.75, na.rm = T),
+            min = min(diff, na.rm = T),
+            max = max(diff, na.rm = T))
 
 test <- wilcox.test(paired$AUTHOR_CNT.x, 
             paired$AUTHOR_CNT.y, 
             alternative = c("two.sided"),
             paired=TRUE)
-test
-# Get Z value
-Z = qnorm(test$p.value/2)
-Z
+Z <- qnorm(test$p.value/2)
 
 # First Author Age
-paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, FIRST_AUTHOR_AGE) %>%
-  inner_join(articles_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, FIRST_AUTHOR_AGE), by="PREPRINT_DOI")
+article_characteristics %>%
+  group_by(TYPE) %>%
+  summarize(median = median(FIRST_AUTHOR_AGE, na.rm = T),
+            q25 = quantile(FIRST_AUTHOR_AGE, 0.25, na.rm = T),
+            q75 = quantile(FIRST_AUTHOR_AGE, 0.75, na.rm = T),
+            min = min(FIRST_AUTHOR_AGE, na.rm = T),
+            max = max(FIRST_AUTHOR_AGE, na.rm = T))
+
+paired %>%
+  mutate(diff = FIRST_AUTHOR_AGE.x - FIRST_AUTHOR_AGE.y) %>%
+  summarize(median = median(diff, na.rm = T),
+            q25 = quantile(diff, 0.25, na.rm = T),
+            q75 = quantile(diff, 0.75, na.rm = T),
+            min = min(diff, na.rm = T),
+            max = max(diff, na.rm = T))
 
 test <- wilcox.test(paired$FIRST_AUTHOR_AGE.x, 
             paired$FIRST_AUTHOR_AGE.y, 
             alternative = c("two.sided"),
             paired=TRUE)
-test
-# Get Z value
-Z = qnorm(test$p.value/2)
-Z
+Z <- qnorm(test$p.value/2)
 
 # Last Author Age
-paired <- article_characteristics %>% filter(TYPE == "Deposited") %>% select(PREPRINT_DOI, LAST_AUTHOR_AGE) %>%
-  inner_join(article_characteristics %>% filter(TYPE == "Control") %>% select(PREPRINT_DOI, LAST_AUTHOR_AGE), by="PREPRINT_DOI")
+article_characteristics %>%
+  group_by(TYPE) %>%
+  summarize(median = median(LAST_AUTHOR_AGE, na.rm = T),
+            q25 = quantile(LAST_AUTHOR_AGE, 0.25, na.rm = T),
+            q75 = quantile(LAST_AUTHOR_AGE, 0.75, na.rm = T),
+            min = min(LAST_AUTHOR_AGE, na.rm = T),
+            max = max(LAST_AUTHOR_AGE, na.rm = T))
+
+paired %>%
+  mutate(diff = LAST_AUTHOR_AGE.x - LAST_AUTHOR_AGE.y) %>%
+  summarize(median = median(diff, na.rm = T),
+            q25 = quantile(diff, 0.25, na.rm = T),
+            q75 = quantile(diff, 0.75, na.rm = T),
+            min = min(diff, na.rm = T),
+            max = max(diff, na.rm = T))
 
 test <- wilcox.test(paired$LAST_AUTHOR_AGE.x, 
             paired$LAST_AUTHOR_AGE.y, 
             alternative = c("two.sided"),
             paired=TRUE)
-test
-# Get Z value
-Z = qnorm(test$p.value/2)
-Z
-
+Z <- qnorm(test$p.value/2)
 
 ```
 
-Categorical variables: Fishers Exact Test
+Categorical variables: Contigency tables and McNemars Test
 
 ```{r}
 
 # IS_OA
-df <- article_characteristics %>% select(TYPE, IS_OA) %>%
-  group_by(TYPE, IS_OA) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=IS_OA, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$IS_OA.x, paired$IS_OA.y)
+mcnemar.test(table(paired$IS_OA.x, paired$IS_OA.y))
 
 # FIRST_AUTHOR_IS_US
-df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_IS_US) %>%
-  group_by(TYPE, FIRST_AUTHOR_IS_US) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=FIRST_AUTHOR_IS_US, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$FIRST_AUTHOR_IS_US.x, paired$FIRST_AUTHOR_IS_US.y)
+mcnemar.test(table(paired$FIRST_AUTHOR_IS_US.x, paired$FIRST_AUTHOR_IS_US.y))
 
 # LAST_AUTHOR_IS_US
-df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_IS_US) %>%
-  group_by(TYPE, LAST_AUTHOR_IS_US) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=LAST_AUTHOR_IS_US, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$LAST_AUTHOR_IS_US.x, paired$LAST_AUTHOR_IS_US.y)
+mcnemar.test(table(paired$LAST_AUTHOR_IS_US.x, paired$LAST_AUTHOR_IS_US.y))
 
 # FIRST_AUTHOR_IS_FEMALE
-df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_IS_FEMALE) %>%
-  na.omit() %>%
-  group_by(TYPE, FIRST_AUTHOR_IS_FEMALE) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=FIRST_AUTHOR_IS_FEMALE, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$FIRST_AUTHOR_IS_FEMALE.x, paired$FIRST_AUTHOR_IS_FEMALE.y)
+mcnemar.test(table(paired$FIRST_AUTHOR_IS_FEMALE.x, paired$FIRST_AUTHOR_IS_FEMALE.y))
 
 # LAST_AUTHOR_IS_FEMALE
-df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_IS_FEMALE) %>%
-  na.omit() %>%
-  group_by(TYPE, LAST_AUTHOR_IS_FEMALE) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=LAST_AUTHOR_IS_FEMALE, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$LAST_AUTHOR_IS_FEMALE.x, paired$LAST_AUTHOR_IS_FEMALE.y)
+mcnemar.test(table(paired$LAST_AUTHOR_IS_FEMALE.x, paired$LAST_AUTHOR_IS_FEMALE.y))
 
 # FIRST_AUTHOR_TOP100_INSTITUTE
-df <- article_characteristics %>% select(TYPE, FIRST_AUTHOR_TOP100_INSTITUTE) %>%
-  na.omit() %>%
-  group_by(TYPE, FIRST_AUTHOR_TOP100_INSTITUTE) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=FIRST_AUTHOR_TOP100_INSTITUTE, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$FIRST_AUTHOR_TOP100_INSTITUTE.x, paired$FIRST_AUTHOR_TOP100_INSTITUTE.y)
+mcnemar.test(table(paired$FIRST_AUTHOR_TOP100_INSTITUTE.x, paired$FIRST_AUTHOR_TOP100_INSTITUTE.y))
 
 # LAST_AUTHOR_TOP100_INSTITUTE
-df <- article_characteristics %>% select(TYPE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
-  na.omit() %>%
-  group_by(TYPE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
-  summarize(n = n()) %>%
-  ungroup() %>%
-  spread(key=LAST_AUTHOR_TOP100_INSTITUTE, value=n) %>%
-  column_to_rownames(var = "TYPE") %>%
-  as.matrix()
-fisher.test(df, alternative = "two.sided")
+table(paired$LAST_AUTHOR_TOP100_INSTITUTE.x, paired$LAST_AUTHOR_TOP100_INSTITUTE.y)
+mcnemar.test(table(paired$LAST_AUTHOR_TOP100_INSTITUTE.x, paired$LAST_AUTHOR_TOP100_INSTITUTE.y))
+
+
+```
+
+### Summary of outcome variables
+
+```{r}
+
+# 12 month citations
+
+# Summary statistics
+read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 12) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(CUMULATIVE_CITATIONS),
+            median = median(CUMULATIVE_CITATIONS),
+            iqr25 = quantile(CUMULATIVE_CITATIONS, 0.25),
+            iqr75 = quantile(CUMULATIVE_CITATIONS, 0.75))
+
+# Paired differences
+paired <- read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 12) %>%
+  filter(TYPE == "Deposited") %>%
+  inner_join(read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 12) %>%
+  filter(TYPE == "Control"), by = "PREPRINT_DOI")
+
+paired %>%
+  mutate(diff = CUMULATIVE_CITATIONS.x - CUMULATIVE_CITATIONS.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcoxon test
+wilcox.test(paired$CUMULATIVE_CITATIONS.x, 
+            paired$CUMULATIVE_CITATIONS.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+
+# 24 month citations
+
+# Summary statistics
+read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 24) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            median = median(CUMULATIVE_CITATIONS),
+            iqr25 = quantile(CUMULATIVE_CITATIONS, 0.25),
+            iqr75 = quantile(CUMULATIVE_CITATIONS, 0.75))
+
+# Paired differences
+paired <- read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 24) %>%
+  filter(TYPE == "Deposited") %>%
+  inner_join(read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 24) %>%
+  filter(TYPE == "Control"), by = "PREPRINT_DOI")
+
+paired %>%
+  mutate(diff = CUMULATIVE_CITATIONS.x - CUMULATIVE_CITATIONS.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcoxon test
+wilcox.test(paired$CUMULATIVE_CITATIONS.x, 
+            paired$CUMULATIVE_CITATIONS.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# 36 month citations
+
+# Summary statistics
+read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 36) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            median = median(CUMULATIVE_CITATIONS),
+            iqr25 = quantile(CUMULATIVE_CITATIONS, 0.25),
+            iqr75 = quantile(CUMULATIVE_CITATIONS, 0.75))
+
+# Paired differences
+paired <- read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 36) %>%
+  filter(TYPE == "Deposited") %>%
+  inner_join(read_csv("data/analysis/article_monthly_citations.csv") %>% 
+  filter(CITATION_INTERVAL == 36) %>%
+  filter(TYPE == "Control"), by = "PREPRINT_DOI")
+
+paired %>%
+  mutate(diff = CUMULATIVE_CITATIONS.x - CUMULATIVE_CITATIONS.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcoxon test
+wilcox.test(paired$CUMULATIVE_CITATIONS.x, 
+            paired$CUMULATIVE_CITATIONS.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# Altmetrics
+
+paired_altmetrics_data <- read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  filter(TYPE == "Deposited") %>%
+  inner_join(read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  filter(TYPE == "Control"), by = "PREPRINT_DOI")
+
+# Tweets
+
+# Summary statistics
+read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(ALT_TWEETS),
+            median = median(ALT_TWEETS),
+            iqr25 = quantile(ALT_TWEETS, 0.25),
+            iqr75 = quantile(ALT_TWEETS, 0.75))
+
+# Paired differences
+paired_altmetrics_data %>%
+  mutate(diff = ALT_TWEETS.x - ALT_TWEETS.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcoxon test
+wilcox.test(paired_altmetrics_data$ALT_TWEETS.x, 
+            paired_altmetrics_data$ALT_TWEETS.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# Blogs
+
+# Summary statistics
+read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(ALT_FEEDS),
+            median = median(ALT_FEEDS),
+            iqr25 = quantile(ALT_FEEDS, 0.25),
+            iqr75 = quantile(ALT_FEEDS, 0.75))
+
+# Paired differences
+paired_altmetrics_data %>%
+  mutate(diff = ALT_FEEDS.x - ALT_FEEDS.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcoxon test
+wilcox.test(paired_altmetrics_data$ALT_FEEDS.x, 
+            paired_altmetrics_data$ALT_FEEDS.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# News
+
+# Summary statistics
+read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(ALT_MSM),
+            median = median(ALT_MSM),
+            iqr25 = quantile(ALT_MSM, 0.25),
+            iqr75 = quantile(ALT_MSM, 0.75))
+
+# Paired differences
+paired_altmetrics_data %>%
+  mutate(diff = ALT_MSM.x - ALT_MSM.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcox test
+wilcox.test(paired_altmetrics_data$ALT_MSM.x, 
+            paired_altmetrics_data$ALT_MSM.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# Summary statistics
+read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(ALT_WIKIPEDIA),
+            sd = sd(ALT_WIKIPEDIA),
+            median = median(ALT_WIKIPEDIA),
+            iqr25 = quantile(ALT_WIKIPEDIA, 0.25),
+            iqr75 = quantile(ALT_WIKIPEDIA, 0.75))
+
+# Paired differences
+paired_altmetrics_data %>%
+  mutate(diff = ALT_WIKIPEDIA.x - ALT_WIKIPEDIA.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcox test
+wilcox.test(paired_altmetrics_data$ALT_WIKIPEDIA.x, 
+            paired_altmetrics_data$ALT_WIKIPEDIA.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+# Mendeley
+
+# Summary statistics
+read_csv("data/raw/article_altmetrics.csv") %>%
+  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI")) %>%
+  group_by(TYPE) %>%
+  summarize(n = n(),
+            mean = mean(ALT_MENDELEY),
+            median = median(ALT_MENDELEY),
+            iqr25 = quantile(ALT_MENDELEY, 0.25),
+            iqr75 = quantile(ALT_MENDELEY, 0.75))
+
+# Paired differences
+paired_altmetrics_data %>%
+  mutate(diff = ALT_MENDELEY.x - ALT_MENDELEY.y) %>%
+  group_by(TYPE.x) %>%
+  summarize(mean = mean(diff),
+            median = median(diff),
+            iqr25 = quantile(diff, 0.25),
+            iqr75 = quantile(diff, 0.75))
+
+# Wilcox test
+wilcox.test(paired_altmetrics_data$ALT_MENDELEY.x, 
+            paired_altmetrics_data$ALT_MENDELEY.y, 
+            alternative = c("two.sided"),
+            paired=TRUE)
+
+```
+
+
+### Correlation tests between variables
+
+```{r}
+
+library(GGally)
+
+article_characteristics %>%
+  select(IF, AUTHOR_CNT, IS_OA, FIRST_AUTHOR_AGE, LAST_AUTHOR_AGE, FIRST_AUTHOR_IS_US, LAST_AUTHOR_IS_US, FIRST_AUTHOR_IS_FEMALE, LAST_AUTHOR_IS_FEMALE, FIRST_AUTHOR_TOP100_INSTITUTE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
+  ggpairs() %>%
+  print(progress = F)
 
 ```
 
@@ -277,13 +522,6 @@ article_altmetrics <- read_csv("data/raw/article_altmetrics.csv")  %>%
   group_by(PREPRINT_DOI) %>%
   filter_all(all_vars(all(!is.na(.))))
 
-
-#articles_monthly_citations <- read_csv("data/analysis/article_monthly_citations.csv") %>%
-#  inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
-#  mutate(PREPRINT_DOI = factor(PREPRINT_DOI),
-#         ARTICLE_DOI = factor(ARTICLE_DOI),
-#         TYPE = factor(TYPE))
-
 articles_monthly_citations <- read_csv("data/analysis/article_monthly_citations.csv") %>%
   inner_join(article_characteristics, by=c("PREPRINT_DOI", "ARTICLE_DOI", "TYPE")) %>%
   mutate(PREPRINT_DOI = factor(PREPRINT_DOI),
@@ -292,19 +530,6 @@ articles_monthly_citations <- read_csv("data/analysis/article_monthly_citations.
   dplyr::select(-SOURCETITLE, -ARTICLE_CREATED_DATE) %>%
   group_by(PREPRINT_DOI) %>%
   filter_all(all_vars(all(!is.na(.))))
-
-```
-
-### Correlation tests between variables
-
-```{r}
-
-library(GGally)
-
-article_characteristics %>%
-  select(IF, AUTHOR_CNT, IS_OA, FIRST_AUTHOR_AGE, LAST_AUTHOR_AGE, FIRST_AUTHOR_IS_US, LAST_AUTHOR_IS_US, FIRST_AUTHOR_IS_FEMALE, LAST_AUTHOR_IS_FEMALE, FIRST_AUTHOR_TOP100_INSTITUTE, LAST_AUTHOR_TOP100_INSTITUTE) %>%
-  ggpairs() %>%
-  print(progress = F)
 
 ```
 
@@ -614,6 +839,7 @@ theta_nb_full_mendeley <- getME(fit_nb_full_mendeley, "glmer.nb.theta")
 
 ```{r}
 
+# Function for calculation of CI
 bootstrapCI <- function(fit, i) {
 
   # Bootstrap residuals
@@ -629,8 +855,10 @@ bootstrapCI <- function(fit, i) {
   return(rbind(CI_upper, CI_lower))
 }
 
+# Do 1000 bootstrap iterations
 iterations <- 1000
 
+# Calcuate CIs for each model
 confint_nb_reduced_citations <- bootstrapCI(fit_nb_reduced_citations, iterations)
 confint_nb_full_citations <- bootstrapCI(fit_nb_full_citations, iterations)
 confint_nb_reduced_tweets <- bootstrapCI(fit_nb_reduced_tweets, iterations)
